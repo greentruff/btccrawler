@@ -2,7 +2,15 @@ package main
 
 import (
 	"log"
+	"flag"
 )
+
+var flagBootstrap string // Bootstrap from the given host
+
+func init() {
+	flag.StringVar(&flagBootstrap, "bootstrap", "", "Node to bootstrap from if none are known")
+	flag.Parse()
+}
 
 func main() {
 	err := initDB()

@@ -39,8 +39,18 @@ func getNodes(live_nodes chan<- Node, end chan<- bool) {
 	}
 	conn.Close()
 
-	if len(addresses) == 0 {
-		addresses["127.0.0.1"] = "18333"
+	if len(addresses) == 0 && flagBootstrap != "" {
+		ip, port, err := net.SplitHostPort(flagBootstrap)
+		if err != nil {
+			log.Fatal("Could not parse address to bootstrap from: ", err)
+		}
+
+		if ip == "" {
+			log.Fatal("Bootstrap IP must be specified")
+		}
+
+		log.Print("Bootstrapping from ", flagBootstrap)
+		addresses[ip] = port
 	}
 
 	rate_limiter := make(chan bool, NUM_THREADS_GET)
