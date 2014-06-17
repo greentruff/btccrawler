@@ -21,6 +21,7 @@ func getNodes(live_nodes chan<- Node, end chan<- bool) {
 		end <- true
 	}()
 
+	// Retrieve known addresses from DB
 	conn := connectDB()
 	rows, err := conn.Query("SELECT ip, port FROM nodes WHERE refresh=1 AND port!=0")
 	if err != nil {
@@ -39,6 +40,7 @@ func getNodes(live_nodes chan<- Node, end chan<- bool) {
 	}
 	conn.Close()
 
+	// Add a bootstrap address if necessary
 	if len(addresses) == 0 && flagBootstrap != "" {
 		ip, port, err := net.SplitHostPort(flagBootstrap)
 		if err != nil {
@@ -53,42 +55,46 @@ func getNodes(live_nodes chan<- Node, end chan<- bool) {
 		addresses[ip] = port
 	}
 
+	// Attempt to get a connection to each node
 	rate_limiter := make(chan bool, NUM_THREADS_GET)
-	for ip, portstr := range addresses {
+	for i:=0; i<NUM_THREADS_GET; ++i {
 		rate_limiter <- true
+	}
 
-		ip := ip
-		portstr := portstr
-		go func() {
-			defer func() {
-				<-rate_limiter
-			}()
+	for ip, port := range addresses {
+		<-rate_limiter
 
-			hostport := net.JoinHostPort(ip, string(portstr))
-			//log.Print("Checking ", hostport)
-
-			conn, err := net.DialTimeout("tcp", hostport, time.Second)
-			if err != nil {
-				return
-			}
-
-			port, err := strconv.Atoi(portstr)
-			if err != nil {
-				log.Print("Port conversion error ", portstr)
-			}
-			node := Node{
-				NetAddr: NetAddr{
-					IP:   net.ParseIP(ip),
-					Port: uint16(port),
-				},
-				Conn: conn,
-			}
-
-			live_nodes <- node
-		}()
+		go getSingleNode(ip, port, live_nodes, end)
 	}
 
 	log.Print("All addresses checked")
+}
+
+func getSingleNode (ip, port string, nodes chan<- Node, end chan<- bool) {
+	defer func() {
+		end <- true
+	}()
+
+	hostport := net.JoinHostPort(ip, port)
+
+	conn, err := net.DialTimeout("tcp", hostport, time.Second)
+	if err != nil {
+		conn = nil
+	}
+
+	portval, err := strconv.Atoi(port)
+	if err != nil {
+		log.Print("Port conversion error ", portstr)
+	}
+	node := Node{
+		NetAddr: NetAddr{
+			IP:   net.ParseIP(ip),
+			Port: uint16(portval),
+		},
+		Conn: conn,
+	}
+
+	nodes <- node
 }
 
 func updateNodes(live_nodes <-chan Node, end chan<- bool) {
