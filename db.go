@@ -82,7 +82,7 @@ func (node Node) Save() (err error) {
 	// Convert node data to string
 	local := make(map[string]interface{})
 
-	log.Print("Saving ", node.NetAddr, " v: ", node.Version != nil,
+	log.Print("Saving ", node.NetAddr.IP, "", node.NetAddr.Port " v: ", node.Version != nil,
 		" n: ", len(node.Addresses))
 	local["ip"] = node.NetAddr.IP.String()
 	local["port"] = node.NetAddr.Port

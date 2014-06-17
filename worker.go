@@ -15,7 +15,7 @@ type Node struct {
 	Addresses []NetAddr
 }
 
-func getNodes(live_nodes chan<- Node, end chan<- bool) {
+func getNodes(nodes chan<- Node, end chan<- bool) {
 	defer func() {
 		close(live_nodes)
 		end <- true
@@ -64,13 +64,13 @@ func getNodes(live_nodes chan<- Node, end chan<- bool) {
 	for ip, port := range addresses {
 		<-rate_limiter
 
-		go getSingleNode(ip, port, live_nodes, end)
+		go getSingleNode(ip, port, nodes, end)
 	}
 
 	log.Print("All addresses checked")
 }
 
-func getSingleNode (ip, port string, nodes chan<- Node, end chan<- bool) {
+func getSingleNode(ip, port string, nodes chan<- Node, end chan<- bool) {
 	defer func() {
 		end <- true
 	}()
@@ -97,13 +97,18 @@ func getSingleNode (ip, port string, nodes chan<- Node, end chan<- bool) {
 	nodes <- node
 }
 
-func updateNodes(live_nodes <-chan Node, end chan<- bool) {
+func updateNodes(nodes <-chan Node, end chan<- bool) {
 	defer func() {
 		end <- true
 	}()
 
-	for node := range live_nodes {
-		upd := refreshNode(node)
+	for node := range nodes {
+		var upd Node
+		if node.Conn != nil {
+			upd = refreshNode(node)
+		} else {
+			upd = node
+		}
 		upd.Save()
 	}
 }
