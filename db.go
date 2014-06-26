@@ -9,6 +9,11 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+type ip_port struct {
+	ip   string
+	port string
+}
+
 const INIT_SCHEMA_NODES = `
 	CREATE TABLE IF NOT EXISTS "nodes" (
 		"id" INTEGER PRIMARY KEY,
@@ -65,10 +70,32 @@ func initDB() (err error) {
 	return
 }
 
+func addressesToUpdate() (addresses []ip_port) {
+	db := connectDB()
+	defer db.Close()
+
+	rows, err := db.Query("SELECT ip, port FROM nodes WHERE updated_at IS NULL AND port!=0")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var ip, port string
+	addresses = make([]ip_port, 0)
+
+	for rows.Next() {
+		rows.Scan(&ip, &port)
+		addresses = append(addresses, ip_port{ip: ip, port: port})
+	}
+
+	return addresses
+}
+
 // Save a node to persistence. If the node does not already exist in the DB,
 // create it. The relation to other nodes is also saved.
 func (node Node) Save() (err error) {
 	db := connectDB()
+	defer db.Close()
+
 	var query string
 	var query_values []interface{}
 
@@ -123,12 +150,12 @@ func (node Node) Save() (err error) {
 
 		//Node exists, update
 		col["updated_at"] = "NOW()"
-		query, query_values = makeUpdateQuery(node_id, col)
+		query, query_values = makeUpdateQuery("nodes", node_id, col)
 		res, err = tx.Exec(query, query_values...)
 	} else {
 		col["created_at"] = "NOW()"
 		col["updated_at"] = "NOW()"
-		query, query_values = makeInsertQuery(col)
+		query, query_values = makeInsertQuery("nodes", col)
 		res, err = tx.Exec(query, query_values...)
 
 		node_id, err = res.LastInsertId()
@@ -147,10 +174,11 @@ func (node Node) Save() (err error) {
 			}
 
 			if !rows.Next() {
-				query, query_values = makeInsertQuery(map[string]interface{}{
-					"ip":      addr.IP.String(),
-					"port":    addr.Port,
-					"refresh": 1,
+				query, query_values = makeInsertQuery("nodes", map[string]interface{}{
+					"ip":   addr.IP.String(),
+					"port": addr.Port,
+
+					"created_at": "NOW()",
 				})
 
 				res, err = tx.Exec(query, query_values...)
@@ -177,8 +205,8 @@ func (node Node) Save() (err error) {
 	return
 }
 
-func makeInsertQuery(cols map[string]interface{}) (query string, query_values []interface{}) {
-	query = "INSERT INTO nodes (%s) VALUES (%s)"
+func makeInsertQuery(table string, cols map[string]interface{}) (query string, query_values []interface{}) {
+	query = fmt.Sprintf("INSERT INTO %s (%%s) VALUES (%%s)", table)
 
 	query_columns := make([]string, len(cols))
 	query_placeholders := make([]string, len(cols))
@@ -198,8 +226,8 @@ func makeInsertQuery(cols map[string]interface{}) (query string, query_values []
 	return query, query_values
 }
 
-func makeUpdateQuery(id int64, cols map[string]interface{}) (query string, query_values []interface{}) {
-	query = "UPDATE nodes SET %s WHERE id=?"
+func makeUpdateQuery(table string, id int64, cols map[string]interface{}) (query string, query_values []interface{}) {
+	query = fmt.Sprintf("UPDATE %s SET %%s WHERE id=?", table)
 
 	query_columns := make([]string, len(cols))
 	query_values = make([]interface{}, len(cols)+1)

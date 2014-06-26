@@ -13,6 +13,8 @@ func init() {
 }
 
 func main() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
 	err := initDB()
 	if err != nil {
 		log.Fatal(err)

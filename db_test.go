@@ -7,8 +7,8 @@ import (
 
 func TestMakeInsertQuery(t *testing.T) {
 	cols := map[string]interface{}{
-		"one": 1,
-		"two": 2,
+		"one":   1,
+		"two":   2,
 		"three": 3,
 	}
 
@@ -20,8 +20,8 @@ func TestMakeInsertQuery(t *testing.T) {
 
 func TestMakeUpdateQuery(t *testing.T) {
 	cols := map[string]interface{}{
-		"one": 1,
-		"two": 2,
+		"one":   1,
+		"two":   2,
 		"three": 3,
 	}
 

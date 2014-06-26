@@ -24,23 +24,7 @@ func getNodes(nodes chan<- Node, end chan<- bool) {
 	}()
 
 	// Retrieve known addresses from DB
-	conn := connectDB()
-	rows, err := conn.Query("SELECT ip, port FROM nodes WHERE refresh=1 AND port!=0")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var ip, portstr string
-	count := 0
-	addresses := make(map[string]string)
-
-	for rows.Next() {
-		rows.Scan(&ip, &portstr)
-		count++
-
-		addresses[ip] = portstr
-	}
-	conn.Close()
+	addresses := addressesToUpdate()
 
 	// Add a bootstrap address if necessary
 	if len(addresses) == 0 && flagBootstrap != "" {
@@ -54,7 +38,7 @@ func getNodes(nodes chan<- Node, end chan<- bool) {
 		}
 
 		log.Print("Bootstrapping from ", flagBootstrap)
-		addresses[ip] = port
+		addresses = append(addresses, ip_port{ip, port})
 	}
 
 	// Attempt to get a connection to each node
@@ -63,34 +47,34 @@ func getNodes(nodes chan<- Node, end chan<- bool) {
 		rate_limiter <- true
 	}
 
-	for ip, port := range addresses {
+	for _, ipp := range addresses {
 		<-rate_limiter
 
-		go getSingleNode(ip, port, nodes, end)
+		go getSingleNode(ipp, nodes, end)
 	}
 
 	log.Print("All addresses checked")
 }
 
-func getSingleNode(ip, port string, nodes chan<- Node, end chan<- bool) {
+func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
 	defer func() {
 		end <- true
 	}()
 
-	hostport := net.JoinHostPort(ip, port)
+	hostport := net.JoinHostPort(ipp.ip, ipp.port)
 
 	conn, err := net.DialTimeout("tcp", hostport, time.Second)
 	if err != nil {
 		conn = nil
 	}
 
-	portval, err := strconv.Atoi(port)
+	portval, err := strconv.Atoi(ipp.port)
 	if err != nil {
-		log.Print("Port conversion error ", port)
+		log.Print("Port conversion error ", ipp.port)
 	}
 	node := Node{
 		NetAddr: NetAddr{
-			IP:   net.ParseIP(ip),
+			IP:   net.ParseIP(ipp.ip),
 			Port: uint16(portval),
 		},
 		Conn: conn,
