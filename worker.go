@@ -15,9 +15,11 @@ type Node struct {
 	Addresses []NetAddr
 }
 
+// ...
+// Closes nodes on exit
 func getNodes(nodes chan<- Node, end chan<- bool) {
 	defer func() {
-		close(live_nodes)
+		close(nodes)
 		end <- true
 	}()
 
@@ -57,7 +59,7 @@ func getNodes(nodes chan<- Node, end chan<- bool) {
 
 	// Attempt to get a connection to each node
 	rate_limiter := make(chan bool, NUM_THREADS_GET)
-	for i:=0; i<NUM_THREADS_GET; ++i {
+	for i := 0; i < NUM_THREADS_GET; i++ {
 		rate_limiter <- true
 	}
 
@@ -84,7 +86,7 @@ func getSingleNode(ip, port string, nodes chan<- Node, end chan<- bool) {
 
 	portval, err := strconv.Atoi(port)
 	if err != nil {
-		log.Print("Port conversion error ", portstr)
+		log.Print("Port conversion error ", port)
 	}
 	node := Node{
 		NetAddr: NetAddr{

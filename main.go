@@ -1,8 +1,8 @@
 package main
 
 import (
-	"log"
 	"flag"
+	"log"
 )
 
 var flagBootstrap string // Bootstrap from the given host
