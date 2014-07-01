@@ -3,19 +3,50 @@ package main
 import (
 	"flag"
 	"log"
+	"os"
+	"runtime/pprof"
 )
 
 var flagBootstrap string // Bootstrap from the given host
 
+var cpuprofile string  // Profile CPU
+var heapprofile string // Profile Memory
+
+var fcpu, fheap *os.File
+
 func init() {
 	flag.StringVar(&flagBootstrap, "bootstrap", "", "Node to bootstrap from if none are known")
+
+	flag.StringVar(&cpuprofile, "cpuprofile", "", "Write CPU profile to file")
+	flag.StringVar(&heapprofile, "heapprofile", "", "Write heap profile to file")
+
 	flag.Parse()
 }
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	log.Print("Starting up")
 
-	err := initDB()
+	var err error
+	if cpuprofile != "" {
+		fcpu, err = os.Create(cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(fcpu)
+		defer pprof.StopCPUProfile()
+	}
+
+	if heapprofile != "" {
+		fheap, err = os.Create(heapprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		defer pprof.WriteHeapProfile(fheap)
+	}
+
+	err = initDB()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -28,4 +59,6 @@ func main() {
 
 	<-end
 	<-end
+
+	cleanDB()
 }

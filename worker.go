@@ -18,7 +18,14 @@ type Node struct {
 // ...
 // Closes nodes on exit
 func getNodes(nodes chan<- Node, end chan<- bool) {
+	// Declare here for defered check
+	rate_limiter := make(chan bool, NUM_CONNECTION_GOROUTINES)
 	defer func() {
+		// Wait for goroutines to finish
+		for i := 0; i < NUM_CONNECTION_GOROUTINES; i++ {
+			<-rate_limiter
+		}
+
 		close(nodes)
 		end <- true
 	}()
@@ -42,18 +49,15 @@ func getNodes(nodes chan<- Node, end chan<- bool) {
 	}
 
 	// Attempt to get a connection to each node
-	rate_limiter := make(chan bool, NUM_THREADS_GET)
-	for i := 0; i < NUM_THREADS_GET; i++ {
+	for i := 0; i < NUM_CONNECTION_GOROUTINES; i++ {
 		rate_limiter <- true
 	}
-
 	for _, ipp := range addresses {
 		<-rate_limiter
-
-		go getSingleNode(ipp, nodes, end)
+		go getSingleNode(ipp, nodes, rate_limiter)
 	}
 
-	log.Print("All addresses checked")
+	log.Print("All addresses queued")
 }
 
 func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
@@ -62,8 +66,8 @@ func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
 	}()
 
 	hostport := net.JoinHostPort(ipp.ip, ipp.port)
-
-	conn, err := net.DialTimeout("tcp", hostport, time.Second)
+	conn, err := net.DialTimeout("tcp", hostport,
+		time.Duration(NODE_CONNECT_TIMEOUT)*time.Second)
 	if err != nil {
 		conn = nil
 	}
@@ -72,6 +76,7 @@ func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
 	if err != nil {
 		log.Print("Port conversion error ", ipp.port)
 	}
+
 	node := Node{
 		NetAddr: NetAddr{
 			IP:   net.ParseIP(ipp.ip),

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"runtime/pprof"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -44,35 +45,57 @@ const INIT_SCHEMA_NODES_KNOWN = `
 		"updated_at" DATETIME
 	);
 	`
+const INDEX_IP_PORT = "CREATE INDEX IF NOT EXISTS node_ip_port ON nodes (ip, port);"
+const INDEX_SOURCE_KNOWN = "CREATE INDEX IF NOT EXISTS nodes_known_source_known ON nodes_known (id_source, id_known);"
 
-func connectDB() (db *sql.DB) {
-	db, err := sql.Open("sqlite3", "data.db")
-	if err != nil {
-		log.Fatal(err)
-	}
-	return
+var dbConnectionPool chan *sql.DB
+
+func acquireDBConn() (db *sql.DB) {
+	return <-dbConnectionPool
+}
+
+func releaseDBConn(db *sql.DB) {
+	dbConnectionPool <- db
 }
 
 func initDB() (err error) {
-	db := connectDB()
-	defer db.Close()
-
-	_, err = db.Exec(INIT_SCHEMA_NODES)
-	if err != nil {
-		return
+	dbConnectionPool = make(chan *sql.DB, NUM_DB_CONN)
+	for i := 0; i < NUM_DB_CONN; i++ {
+		db, err := sql.Open("sqlite3", "data.db")
+		if err != nil {
+			return err
+		}
+		dbConnectionPool <- db
 	}
 
-	_, err = db.Exec(INIT_SCHEMA_NODES_KNOWN)
-	if err != nil {
-		return
+	db := acquireDBConn()
+	defer releaseDBConn(db)
+
+	for _, q := range []string{
+		INIT_SCHEMA_NODES,
+		INIT_SCHEMA_NODES_KNOWN,
+		INDEX_IP_PORT,
+		INDEX_SOURCE_KNOWN,
+	} {
+		_, err = db.Exec(q)
+		if err != nil {
+			return
+		}
 	}
 
 	return
 }
 
+func cleanDB() {
+	for i := 0; i < NUM_DB_CONN; i++ {
+		db := <-dbConnectionPool
+		db.Close()
+	}
+}
+
 func addressesToUpdate() (addresses []ip_port) {
-	db := connectDB()
-	defer db.Close()
+	db := acquireDBConn()
+	defer releaseDBConn(db)
 
 	rows, err := db.Query("SELECT ip, port FROM nodes WHERE updated_at IS NULL AND port!=0")
 	if err != nil {
@@ -93,8 +116,8 @@ func addressesToUpdate() (addresses []ip_port) {
 // Save a node to persistence. If the node does not already exist in the DB,
 // create it. The relation to other nodes is also saved.
 func (node Node) Save() (err error) {
-	db := connectDB()
-	defer db.Close()
+	db := acquireDBConn()
+	defer releaseDBConn(db)
 
 	var query string
 	var query_values []interface{}
@@ -105,7 +128,14 @@ func (node Node) Save() (err error) {
 	// Columns to set/update
 	col := make(map[string]interface{})
 
-	log.Print("Saving ", ip, " ", port, " v: ", node.Version != nil, " n: ", len(node.Addresses))
+	if node.Version != nil {
+		log.Print("Saving ", ip, " ", port, " v: ", node.Version.UserAgent, " n: ", len(node.Addresses))
+
+		// Update heap profile on each success
+		if heapprofile != "" {
+			defer pprof.WriteHeapProfile(fheap)
+		}
+	}
 
 	// Unable to connect to node
 
@@ -164,16 +194,17 @@ func (node Node) Save() (err error) {
 		log.Fatal(err)
 	}
 
-	var remote_id int64
+	var remote_id, known_node_id int64
 	if node.Addresses != nil {
 		for _, addr := range node.Addresses {
-			rows, err = tx.Query("SELECT * FROM nodes WHERE ip=? AND port=?;",
+			rows, err = tx.Query("SELECT id FROM nodes WHERE ip=? AND port=?;",
 				addr.IP.String(), addr.Port)
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			if !rows.Next() {
+				// New peer node
 				query, query_values = makeInsertQuery("nodes", map[string]interface{}{
 					"ip":   addr.IP.String(),
 					"port": addr.Port,
@@ -187,14 +218,49 @@ func (node Node) Save() (err error) {
 				}
 
 				remote_id, err = res.LastInsertId()
-			}
-			rows.Close()
 
-			res, err = tx.Exec("INSERT INTO nodes_known (id_source, id_known) VALUES (?, ?);",
-				node_id, remote_id)
-			if err != nil {
-				log.Fatal(err)
+				query, query_values = makeInsertQuery("nodes_known",
+					map[string]interface{}{
+						"created_at": "NOW()",
+						"updated_at": "NOW()",
+					})
+				res, err = tx.Exec(query, query_values...)
+				if err != nil {
+					log.Fatal(err)
+				}
+			} else {
+				// Remote node already known
+				rows.Scan(&remote_id)
+				rows.Close()
+
+				rows, err = tx.Query("SELECT id FROM nodes_known WHERE id_source=? AND id_known=?;",
+					node_id, remote_id)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				if rows.Next() {
+					rows.Scan(&known_node_id)
+					rows.Close()
+
+					query, query_values = makeUpdateQuery("nodes_known", known_node_id,
+						map[string]interface{}{
+							"updated_at": "NOW()",
+						})
+				} else {
+					query, query_values = makeInsertQuery("nodes_known",
+						map[string]interface{}{
+							"created_at": "NOW()",
+							"updated_at": "NOW()",
+						})
+				}
+				res, err = tx.Exec(query, query_values...)
+				if err != nil {
+					log.Fatal(err)
+				}
+
 			}
+
 		}
 	}
 

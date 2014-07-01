@@ -24,8 +24,13 @@ const CURRENT_PROTOCOL = 70001
 const USER_AGENT = "/BTCCRAWLER/0.1/"
 
 // Number of goroutines
-const NUM_THREADS_GET = 20
-const NUM_THREADS_REFRESH = 1
+const NUM_CONNECTION_GOROUTINES = 20
+
+// Timeout
+const NODE_CONNECT_TIMEOUT = 10
 
 // Size of channel of nodes which are live but haven't been refreshed yet
 const LIVE_NODE_BUFFER_SIZE = 20
+
+// Concurrent connections to DB
+const NUM_DB_CONN = 10
