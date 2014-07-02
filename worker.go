@@ -47,9 +47,12 @@ func getNodes(addresses chan<- ip_port, end chan<- bool) {
 	}
 
 	// Attempt to get new addresses endlessly.
-	// TODO: Manage SIGINT in some way ?
+	
+
 	for {
-		// Only get new addresses if we consumed have of the addresses fetched
+		log.Print(len(addresses), " addresses in queue")
+
+		// Only get new addresses if we consumed at least half of the addresses fetched
 		// during the last iteration
 		if len(addresses) < ADDRESSES_NUM/2 {
 			fetched_addresses, max_addresses := addressesToUpdate()
@@ -59,9 +62,11 @@ func getNodes(addresses chan<- ip_port, end chan<- bool) {
 			for _, addr := range fetched_addresses {
 				addresses <- addr
 			}
-		}
+		} 
 
-		time.Sleep(ADDRESSES_INTERVAL * time.Hour)
+		
+
+		time.Sleep(ADDRESSES_INTERVAL)
 	}
 
 }
@@ -107,7 +112,9 @@ func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
 
 	portval, err := strconv.Atoi(ipp.port)
 	if err != nil {
-		log.Print("Port conversion error ", ipp.port)
+		if verbose {
+			log.Print("Port conversion error ", ipp.port)
+		}
 	}
 
 	node := Node{
@@ -125,15 +132,21 @@ func updateNodes(nodes <-chan Node, end chan<- bool) {
 	defer func() {
 		end <- true
 	}()
+	
+	db := acquireDBConn()
+	defer releaseDBConn(db)
 
 	for node := range nodes {
 		var upd Node
 		if node.Conn != nil {
+			if verbose {
+				log.Print("Refreshing ", node.NetAddr.IP.String, " ", node.NetAddr.Port)
+			}
 			upd = refreshNode(node)
 		} else {
 			upd = node
 		}
-		upd.Save()
+		upd.Save(db)
 	}
 }
 
@@ -196,7 +209,9 @@ func refreshNode(node Node) (updated Node) {
 				}
 			}
 		default:
-			log.Printf("Received %s from %v", msg.Type, node.Conn.RemoteAddr())
+			if verbose {
+				log.Printf("Received %s from %v", msg.Type, node.Conn.RemoteAddr())
+			}
 		}
 	}
 

@@ -1,5 +1,7 @@
 package main
 
+import ("time")
+
 // Magic numbers specific to each network
 var (
 	NETWORK_MAIN     []byte = []byte{0xF9, 0xBE, 0xB4, 0xD9}
@@ -36,7 +38,7 @@ const LIVE_NODE_BUFFER_SIZE = 20
 const NUM_DB_CONN = 10
 
 const ADDRESSES_NUM = 5000   // Number of addresses to fetch
-const ADDRESSES_INTERVAL = 1 // Interval to check for new addresses to update (Hours)
+const ADDRESSES_INTERVAL = 5 * time.Minute // Interval to check for new addresses to update
 
 // Minimum update interval for nodes (hours)
 const NODE_REFRESH_INTERVAL = 6

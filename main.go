@@ -11,6 +11,7 @@ var flagBootstrap string // Bootstrap from the given host
 
 var cpuprofile string  // Profile CPU
 var heapprofile string // Profile Memory
+var verbose bool // Verbose logging
 
 var fcpu, fheap *os.File
 
@@ -20,13 +21,20 @@ func init() {
 	flag.StringVar(&cpuprofile, "cpuprofile", "", "Write CPU profile to file")
 	flag.StringVar(&heapprofile, "heapprofile", "", "Write heap profile to file")
 
+	verboseFlag := flag.Bool("v", false, "Verbose output")
+
 	flag.Parse()
+
+	verbose = *verboseFlag
+
+	logFlags := 0 // No log flags by default
+	if verbose {
+		logFlags = logFlags | log.Ldate | log.Ltime | log.Lshortfile
+	}
+	log.SetFlags(logFlags)
 }
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	log.Print("Starting up")
-
 	var err error
 	if cpuprofile != "" {
 		fcpu, err = os.Create(cpuprofile)
@@ -52,13 +60,13 @@ func main() {
 	}
 
 	addresses := make(chan ip_port, 2*ADDRESSES_NUM)
-	live_nodes := make(chan Node, LIVE_NODE_BUFFER_SIZE)
+	nodes := make(chan Node, NODE_BUFFER_SIZE)
 	end := make(chan bool, 2)
 
 	go getNodes(addresses, end)
-	go connectNodes(addresses, live_nodes, end)
-	go updateNodes(live_nodes, end)
-
+	go connectNodes(addresses, nodes, end)
+	go updateNodes(nodes, end)
+	
 	// Wait for all three main goroutines to end
 	<-end
 	<-end

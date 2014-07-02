@@ -145,6 +145,9 @@ func addressesToUpdate() (addresses []ip_port, max int) {
 
 	for rows.Next() {
 		rows.Scan(&ip, &port)
+		// if verbose {
+		// 	log.Print("Getting ", ip, " ", port)
+		// }
 		addresses = append(addresses, ip_port{ip: ip, port: port})
 	}
 
@@ -165,10 +168,7 @@ func addressesToUpdate() (addresses []ip_port, max int) {
 
 // Save a node to persistence. If the node does not already exist in the DB,
 // create it. The relation to other nodes is also saved.
-func (node Node) Save() (err error) {
-	db := acquireDBConn()
-	defer releaseDBConn(db)
-
+func (node Node) Save(db *sql.DB) (err error) {
 	var query string
 
 	ip := node.NetAddr.IP.String()
@@ -178,7 +178,9 @@ func (node Node) Save() (err error) {
 	col := make(map[string]interface{})
 
 	if node.Version != nil {
-		log.Print("Saving ", ip, " ", port, " v: ", node.Version.UserAgent, " n: ", len(node.Addresses))
+		if node.Version.UserAgent != "" || len(node.Addresses) > 0 {
+			log.Print(node.Version.UserAgent, " ", len(node.Addresses), " peers ", ip, " ", port)
+		}
 
 		// Update heap profile on each success
 		if heapprofile != "" {
@@ -265,6 +267,10 @@ func (node Node) Save() (err error) {
 
 	if node.Addresses != nil {
 		for _, addr := range node.Addresses {
+			if verbose {
+				log.Print(ip, " ", port, " ", addr.IP.String(), " ", addr.Port)
+			}
+
 			query = fmt.Sprintf(`SELECT id, 
 					datetime(updated_at, '+%d HOURS') > datetime(), 
 					next_refresh
@@ -280,6 +286,10 @@ func (node Node) Save() (err error) {
 				// Remote node already known
 				rows.Scan(&remote_id, &recent_update, &remote_next_refresh)
 				rows.Close()
+
+				if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
+					log.Print(ip," ", port," id: ", remote_id)
+				}
 
 				// Check if already a known neighbour and insert/update accordingly
 				rows, err = tx.Query("SELECT id FROM nodes_known WHERE id_source=? AND id_known=?;",
@@ -303,6 +313,7 @@ func (node Node) Save() (err error) {
 							"updated_at": "datetime()",
 						})
 				}
+
 				res, err = tx.Exec(query)
 				if err != nil {
 					logQueryError(query, err)
@@ -336,6 +347,10 @@ func (node Node) Save() (err error) {
 				}
 
 				remote_id, err = res.LastInsertId()
+
+				if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
+					log.Print(ip," ", port," id: ", remote_id, " (new)")
+				}
 
 				query = makeInsertQuery("nodes_known",
 					map[string]interface{}{
