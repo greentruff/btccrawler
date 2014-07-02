@@ -51,12 +51,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	addresses := make(chan ip_port, ADDRESSES_NUM)
 	live_nodes := make(chan Node, LIVE_NODE_BUFFER_SIZE)
 	end := make(chan bool, 2)
 
-	go getNodes(live_nodes, end) // Get nodes which respond
+	go getNodes(addresses, end)
+	go connectNodes(addresses, live_nodes, end)
 	go updateNodes(live_nodes, end)
 
+	// Wait for all three main goroutines to end
+	<-end
 	<-end
 	<-end
 

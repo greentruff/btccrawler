@@ -26,11 +26,13 @@ const INIT_SCHEMA_NODES = `
 		"online" BOOL, 
 		"success" BOOL,
 
+		"next_refresh" DATETIME
+
 		"online_at" DATETIME,
 		"success_at" DATETIME,
 
 		"created_at" DATETIME,
-		"updated_at" DATETIME
+		"updated_at" DATETIME,
 	);
 	`
 
@@ -50,15 +52,10 @@ const INDEX_SOURCE_KNOWN = "CREATE INDEX IF NOT EXISTS nodes_known_source_known 
 
 var dbConnectionPool chan *sql.DB
 
-func acquireDBConn() (db *sql.DB) {
-	return <-dbConnectionPool
-}
-
-func releaseDBConn(db *sql.DB) {
-	dbConnectionPool <- db
-}
-
+// Initialize pool of DB connections
 func initDB() (err error) {
+	log.Print("Initializing DB connections")
+
 	dbConnectionPool = make(chan *sql.DB, NUM_DB_CONN)
 	for i := 0; i < NUM_DB_CONN; i++ {
 		db, err := sql.Open("sqlite3", "data.db")
@@ -86,24 +83,65 @@ func initDB() (err error) {
 	return
 }
 
+// Clean up pool of DB connections
 func cleanDB() {
+	log.Print("Cleaning up DB connections")
+
 	for i := 0; i < NUM_DB_CONN; i++ {
 		db := <-dbConnectionPool
 		db.Close()
 	}
 }
 
+// Get a connection from the pool of DB connections
+func acquireDBConn() (db *sql.DB) {
+	return <-dbConnectionPool
+}
+
+// Release a connection back to the pool of DB connections
+func releaseDBConn(db *sql.DB) {
+	dbConnectionPool <- db
+}
+
+// Returns whether there are nodes in the DB which can be used to crawl the
+// bitcoin network
+func haveKnownNodes() bool {
+	db := acquireDBConn()
+	defer releaseDBConn(db)
+
+	row := db.QueryRow(`SELECT COUNT(*) 
+		FROM nodes 
+		WHERE success = 1`)
+
+	var count int
+	err := row.Scan(&count)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return count != 0
+}
+
+// Retrieves addresses which need to be updated
 func addressesToUpdate() (addresses []ip_port) {
 	db := acquireDBConn()
 	defer releaseDBConn(db)
 
-	rows, err := db.Query("SELECT ip, port FROM nodes WHERE updated_at IS NULL AND port!=0")
+	// Update nodes with a
+	query := fmt.Sprintf(`SELECT ip, port 
+		FROM nodes 
+		WHERE port!=0
+			AND next_refresh < datetime()
+		ORDER BY next_refresh
+		LIMIT %d`, ADDRESSES_NUM)
+
+	rows, err := db.Query(query)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	var ip, port string
-	addresses = make([]ip_port, 0)
+	addresses = make([]ip_port, 0, ADDRESSES_NUM)
 
 	for rows.Next() {
 		rows.Scan(&ip, &port)
@@ -137,22 +175,26 @@ func (node Node) Save() (err error) {
 		}
 	}
 
-	// Unable to connect to node
-
+	// Able to TCP connect to node
 	if node.Conn == nil {
 		col["online"] = "0"
+		// Do not refresh until the node is seen again as a neighbour
+		col["next_refresh"] = "NULL"
 	} else {
 		col["online"] = "1"
-		col["online_at"] = "NOW()"
+		col["online_at"] = "datetime()"
+
+		col["next_refresh"] = fmt.Sprintf("datetime('now', '+%d HOURS')",
+			NODE_REFRESH_INTERVAL)
 	}
 
-	// Able to communicate with node
+	// Able initiate communication with node
 	if node.Version != nil {
 		col["protocol"] = node.Version.Protocol
 		col["user_agent"] = node.Version.UserAgent
 
 		col["success"] = "1"
-		col["success_at"] = "NOW()"
+		col["success_at"] = "datetime()"
 	} else {
 		col["success"] = "0"
 	}
@@ -165,7 +207,7 @@ func (node Node) Save() (err error) {
 	defer tx.Rollback()
 
 	// Find if node has already been contacted
-	rows, err := tx.Query("SELECT id FROM nodes	WHERE ip=? AND port=?;", ip, port)
+	rows, err := tx.Query("SELECT id FROM nodes WHERE ip=? AND port=?", ip, port)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -179,12 +221,13 @@ func (node Node) Save() (err error) {
 		rows.Close()
 
 		//Node exists, update
-		col["updated_at"] = "NOW()"
+		col["updated_at"] = "datetime()"
+
 		query, query_values = makeUpdateQuery("nodes", node_id, col)
 		res, err = tx.Exec(query, query_values...)
 	} else {
-		col["created_at"] = "NOW()"
-		col["updated_at"] = "NOW()"
+		col["created_at"] = "datetime()"
+		col["updated_at"] = "datetime()"
 		query, query_values = makeInsertQuery("nodes", col)
 		res, err = tx.Exec(query, query_values...)
 
@@ -194,45 +237,32 @@ func (node Node) Save() (err error) {
 		log.Fatal(err)
 	}
 
-	var remote_id, known_node_id int64
+	// Save known nodes
+	var (
+		remote_id, known_node_id int64
+		recent_update            int
+		remote_next_refresh      string
+	)
+
 	if node.Addresses != nil {
 		for _, addr := range node.Addresses {
-			rows, err = tx.Query("SELECT id FROM nodes WHERE ip=? AND port=?;",
+			query = fmt.Sprintf(`SELECT id, 
+					datetime(updated_at, '+%d HOURS') > datetime(), 
+					next_refresh
+				FROM nodes 
+				WHERE ip=? AND port=?`, NODE_REFRESH_INTERVAL)
+			rows, err = tx.Query(query,
 				addr.IP.String(), addr.Port)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			if !rows.Next() {
-				// New peer node
-				query, query_values = makeInsertQuery("nodes", map[string]interface{}{
-					"ip":   addr.IP.String(),
-					"port": addr.Port,
-
-					"created_at": "NOW()",
-				})
-
-				res, err = tx.Exec(query, query_values...)
-				if err != nil {
-					log.Fatal(err)
-				}
-
-				remote_id, err = res.LastInsertId()
-
-				query, query_values = makeInsertQuery("nodes_known",
-					map[string]interface{}{
-						"created_at": "NOW()",
-						"updated_at": "NOW()",
-					})
-				res, err = tx.Exec(query, query_values...)
-				if err != nil {
-					log.Fatal(err)
-				}
-			} else {
+			if rows.Next() {
 				// Remote node already known
-				rows.Scan(&remote_id)
+				rows.Scan(&remote_id, &recent_update, &remote_next_refresh)
 				rows.Close()
 
+				// Check if already a known neighbour and insert/update accordingly
 				rows, err = tx.Query("SELECT id FROM nodes_known WHERE id_source=? AND id_known=?;",
 					node_id, remote_id)
 				if err != nil {
@@ -245,13 +275,13 @@ func (node Node) Save() (err error) {
 
 					query, query_values = makeUpdateQuery("nodes_known", known_node_id,
 						map[string]interface{}{
-							"updated_at": "NOW()",
+							"updated_at": "datetime()",
 						})
 				} else {
 					query, query_values = makeInsertQuery("nodes_known",
 						map[string]interface{}{
-							"created_at": "NOW()",
-							"updated_at": "NOW()",
+							"created_at": "datetime()",
+							"updated_at": "datetime()",
 						})
 				}
 				res, err = tx.Exec(query, query_values...)
@@ -259,8 +289,45 @@ func (node Node) Save() (err error) {
 					log.Fatal(err)
 				}
 
-			}
+				// Set the next refresh date if necessary
+				if remote_next_refresh == "" && recent_update == 0 {
+					query, query_values = makeUpdateQuery("nodes", remote_id, map[string]interface{}{
+						"next_refresh": fmt.Sprintf("datetime('now', '+%d HOURS')", NODE_REFRESH_INTERVAL),
+					})
 
+					res, err = tx.Exec(query, query_values...)
+					if err != nil {
+						log.Fatal(err)
+					}
+				}
+			} else {
+				// New peer node
+				query, query_values = makeInsertQuery("nodes", map[string]interface{}{
+					"ip":   addr.IP.String(),
+					"port": addr.Port,
+
+					"created_at":   "datetime()",
+					"updated_at":   "datetime()",
+					"next_refresh": "datetime()",
+				})
+
+				res, err = tx.Exec(query, query_values...)
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				remote_id, err = res.LastInsertId()
+
+				query, query_values = makeInsertQuery("nodes_known",
+					map[string]interface{}{
+						"created_at": "datetime()",
+						"updated_at": "datetime()",
+					})
+				res, err = tx.Exec(query, query_values...)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
 		}
 	}
 
@@ -271,6 +338,8 @@ func (node Node) Save() (err error) {
 	return
 }
 
+// Make a parametrized SQL INSERT query and associated values for `table` using
+// the columns in `cols`
 func makeInsertQuery(table string, cols map[string]interface{}) (query string, query_values []interface{}) {
 	query = fmt.Sprintf("INSERT INTO %s (%%s) VALUES (%%s)", table)
 
@@ -292,6 +361,8 @@ func makeInsertQuery(table string, cols map[string]interface{}) (query string, q
 	return query, query_values
 }
 
+// Make a parametrised SQL UPDATE query and associated values for `table`
+// updating the columns in `cols` for row with `id`
 func makeUpdateQuery(table string, id int64, cols map[string]interface{}) (query string, query_values []interface{}) {
 	query = fmt.Sprintf("UPDATE %s SET %%s WHERE id=?", table)
 

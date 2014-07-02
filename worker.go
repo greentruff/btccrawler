@@ -15,9 +15,63 @@ type Node struct {
 	Addresses []NetAddr
 }
 
-// ...
+// Periodically get addresses of Nodes which need to be updated
+// Closes addresses on exit
+func getNodes(addresses chan<- ip_port, end chan<- bool) {
+	defer func() {
+		end <- true
+	}()
+
+	// Add a bootstrap address if necessary
+	if haveKnownNodes() {
+		// A bootstrap address MUST be provided on first launch
+		if flagBootstrap == "" {
+			log.Fatal("No known nodes in DB and no bootstrap address provided.")
+		}
+
+		ip, port, err := net.SplitHostPort(flagBootstrap)
+		if err != nil {
+			log.Fatal("Could not parse address to bootstrap from: ", err)
+		}
+
+		if ip == "" {
+			log.Fatal("Bootstrap IP must be specified")
+		}
+
+		log.Print("Bootstrapping from ", flagBootstrap)
+		addresses <- ip_port{ip, port}
+
+		// Give connection to bootstraped address time to succeed before
+		// attempting to get more addresses
+		time.Sleep(time.Minute)
+	}
+
+	// Attempt to get new addresses endlessly.
+	// TODO: Manage SIGINT in some way ?
+	for {
+		// Only get new addresses if we consumed have of the addresses fetched
+		// during the last iteration
+		if len(addresses) < ADDRESSES_NUM/2 {
+			fetched_addresses := addressesToUpdate()
+
+			log.Print("Adding ", len(fetched_addresses), " addresses")
+
+			for _, addr := range fetched_addresses {
+				addresses <- addr
+			}
+		}
+
+		time.Sleep(ADDRESSES_INTERVAL * time.Hour)
+	}
+
+}
+
+// Attempt to connect to the addresses provided by `addresses` and sends the
+// resulting Node to `nodes`
+// The number of addresses which are checked simultaneously is defined by
+// NUM_CONNECTION_GOROUTINES.
 // Closes nodes on exit
-func getNodes(nodes chan<- Node, end chan<- bool) {
+func connectNodes(addresses <-chan ip_port, nodes chan<- Node, end chan<- bool) {
 	// Declare here for defered check
 	rate_limiter := make(chan bool, NUM_CONNECTION_GOROUTINES)
 	defer func() {
@@ -30,34 +84,14 @@ func getNodes(nodes chan<- Node, end chan<- bool) {
 		end <- true
 	}()
 
-	// Retrieve known addresses from DB
-	addresses := addressesToUpdate()
-
-	// Add a bootstrap address if necessary
-	if len(addresses) == 0 && flagBootstrap != "" {
-		ip, port, err := net.SplitHostPort(flagBootstrap)
-		if err != nil {
-			log.Fatal("Could not parse address to bootstrap from: ", err)
-		}
-
-		if ip == "" {
-			log.Fatal("Bootstrap IP must be specified")
-		}
-
-		log.Print("Bootstrapping from ", flagBootstrap)
-		addresses = append(addresses, ip_port{ip, port})
-	}
-
 	// Attempt to get a connection to each node
 	for i := 0; i < NUM_CONNECTION_GOROUTINES; i++ {
 		rate_limiter <- true
 	}
-	for _, ipp := range addresses {
+	for ipp := range addresses {
 		<-rate_limiter
 		go getSingleNode(ipp, nodes, rate_limiter)
 	}
-
-	log.Print("All addresses queued")
 }
 
 func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
@@ -66,8 +100,7 @@ func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
 	}()
 
 	hostport := net.JoinHostPort(ipp.ip, ipp.port)
-	conn, err := net.DialTimeout("tcp", hostport,
-		time.Duration(NODE_CONNECT_TIMEOUT)*time.Second)
+	conn, err := net.DialTimeout("tcp", hostport, NODE_CONNECT_TIMEOUT*time.Second)
 	if err != nil {
 		conn = nil
 	}
