@@ -23,7 +23,7 @@ func getNodes(addresses chan<- ip_port, end chan<- bool) {
 	}()
 
 	// Add a bootstrap address if necessary
-	if haveKnownNodes() {
+	if !haveKnownNodes() {
 		// A bootstrap address MUST be provided on first launch
 		if flagBootstrap == "" {
 			log.Fatal("No known nodes in DB and no bootstrap address provided.")
@@ -52,9 +52,9 @@ func getNodes(addresses chan<- ip_port, end chan<- bool) {
 		// Only get new addresses if we consumed have of the addresses fetched
 		// during the last iteration
 		if len(addresses) < ADDRESSES_NUM/2 {
-			fetched_addresses := addressesToUpdate()
+			fetched_addresses, max_addresses := addressesToUpdate()
 
-			log.Print("Adding ", len(fetched_addresses), " addresses")
+			log.Print("Adding ", len(fetched_addresses), "/", max_addresses, " addresses")
 
 			for _, addr := range fetched_addresses {
 				addresses <- addr

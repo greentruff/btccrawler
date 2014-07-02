@@ -51,7 +51,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	addresses := make(chan ip_port, ADDRESSES_NUM)
+	addresses := make(chan ip_port, 2*ADDRESSES_NUM)
 	live_nodes := make(chan Node, LIVE_NODE_BUFFER_SIZE)
 	end := make(chan bool, 2)
 

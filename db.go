@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -26,13 +27,13 @@ const INIT_SCHEMA_NODES = `
 		"online" BOOL, 
 		"success" BOOL,
 
-		"next_refresh" DATETIME
+		"next_refresh" DATETIME,
 
 		"online_at" DATETIME,
 		"success_at" DATETIME,
 
 		"created_at" DATETIME,
-		"updated_at" DATETIME,
+		"updated_at" DATETIME
 	);
 	`
 
@@ -76,7 +77,7 @@ func initDB() (err error) {
 	} {
 		_, err = db.Exec(q)
 		if err != nil {
-			return
+			logQueryError(q, err)
 		}
 	}
 
@@ -123,11 +124,10 @@ func haveKnownNodes() bool {
 }
 
 // Retrieves addresses which need to be updated
-func addressesToUpdate() (addresses []ip_port) {
+func addressesToUpdate() (addresses []ip_port, max int) {
 	db := acquireDBConn()
 	defer releaseDBConn(db)
 
-	// Update nodes with a
 	query := fmt.Sprintf(`SELECT ip, port 
 		FROM nodes 
 		WHERE port!=0
@@ -137,7 +137,7 @@ func addressesToUpdate() (addresses []ip_port) {
 
 	rows, err := db.Query(query)
 	if err != nil {
-		log.Fatal(err)
+		logQueryError(query, err)
 	}
 
 	var ip, port string
@@ -148,7 +148,19 @@ func addressesToUpdate() (addresses []ip_port) {
 		addresses = append(addresses, ip_port{ip: ip, port: port})
 	}
 
-	return addresses
+	// Get max count
+	query = `SELECT COUNT(*) 
+		FROM nodes 
+		WHERE port!=0
+			AND next_refresh < datetime()`
+
+	row := db.QueryRow(query)
+	err = row.Scan(&max)
+	if err != nil {
+		logQueryError(query, err)
+	}
+
+	return addresses, max
 }
 
 // Save a node to persistence. If the node does not already exist in the DB,
@@ -158,7 +170,6 @@ func (node Node) Save() (err error) {
 	defer releaseDBConn(db)
 
 	var query string
-	var query_values []interface{}
 
 	ip := node.NetAddr.IP.String()
 	port := node.NetAddr.Port
@@ -174,6 +185,9 @@ func (node Node) Save() (err error) {
 			defer pprof.WriteHeapProfile(fheap)
 		}
 	}
+
+	col["ip"] = "'" + ip + "'"
+	col["port"] = port
 
 	// Able to TCP connect to node
 	if node.Conn == nil {
@@ -191,7 +205,7 @@ func (node Node) Save() (err error) {
 	// Able initiate communication with node
 	if node.Version != nil {
 		col["protocol"] = node.Version.Protocol
-		col["user_agent"] = node.Version.UserAgent
+		col["user_agent"] = "'" + node.Version.UserAgent + "'"
 
 		col["success"] = "1"
 		col["success_at"] = "datetime()"
@@ -209,7 +223,7 @@ func (node Node) Save() (err error) {
 	// Find if node has already been contacted
 	rows, err := tx.Query("SELECT id FROM nodes WHERE ip=? AND port=?", ip, port)
 	if err != nil {
-		log.Fatal(err)
+		logQueryError(query, err)
 	}
 
 	var (
@@ -223,18 +237,23 @@ func (node Node) Save() (err error) {
 		//Node exists, update
 		col["updated_at"] = "datetime()"
 
-		query, query_values = makeUpdateQuery("nodes", node_id, col)
-		res, err = tx.Exec(query, query_values...)
+		query = makeUpdateQuery("nodes", node_id, col)
+		res, err = tx.Exec(query)
+
+		if err != nil {
+			logQueryError(query, err)
+		}
 	} else {
 		col["created_at"] = "datetime()"
 		col["updated_at"] = "datetime()"
-		query, query_values = makeInsertQuery("nodes", col)
-		res, err = tx.Exec(query, query_values...)
+		query = makeInsertQuery("nodes", col)
+		res, err = tx.Exec(query)
+
+		if err != nil {
+			logQueryError(query, err)
+		}
 
 		node_id, err = res.LastInsertId()
-	}
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	// Save known nodes
@@ -254,7 +273,7 @@ func (node Node) Save() (err error) {
 			rows, err = tx.Query(query,
 				addr.IP.String(), addr.Port)
 			if err != nil {
-				log.Fatal(err)
+				logQueryError(query, err)
 			}
 
 			if rows.Next() {
@@ -266,44 +285,44 @@ func (node Node) Save() (err error) {
 				rows, err = tx.Query("SELECT id FROM nodes_known WHERE id_source=? AND id_known=?;",
 					node_id, remote_id)
 				if err != nil {
-					log.Fatal(err)
+					logQueryError(query, err)
 				}
 
 				if rows.Next() {
 					rows.Scan(&known_node_id)
 					rows.Close()
 
-					query, query_values = makeUpdateQuery("nodes_known", known_node_id,
+					query = makeUpdateQuery("nodes_known", known_node_id,
 						map[string]interface{}{
 							"updated_at": "datetime()",
 						})
 				} else {
-					query, query_values = makeInsertQuery("nodes_known",
+					query = makeInsertQuery("nodes_known",
 						map[string]interface{}{
 							"created_at": "datetime()",
 							"updated_at": "datetime()",
 						})
 				}
-				res, err = tx.Exec(query, query_values...)
+				res, err = tx.Exec(query)
 				if err != nil {
-					log.Fatal(err)
+					logQueryError(query, err)
 				}
 
 				// Set the next refresh date if necessary
 				if remote_next_refresh == "" && recent_update == 0 {
-					query, query_values = makeUpdateQuery("nodes", remote_id, map[string]interface{}{
+					query = makeUpdateQuery("nodes", remote_id, map[string]interface{}{
 						"next_refresh": fmt.Sprintf("datetime('now', '+%d HOURS')", NODE_REFRESH_INTERVAL),
 					})
 
-					res, err = tx.Exec(query, query_values...)
+					res, err = tx.Exec(query)
 					if err != nil {
-						log.Fatal(err)
+						logQueryError(query, err)
 					}
 				}
 			} else {
 				// New peer node
-				query, query_values = makeInsertQuery("nodes", map[string]interface{}{
-					"ip":   addr.IP.String(),
+				query = makeInsertQuery("nodes", map[string]interface{}{
+					"ip":   "'" + addr.IP.String() + "'",
 					"port": addr.Port,
 
 					"created_at":   "datetime()",
@@ -311,21 +330,21 @@ func (node Node) Save() (err error) {
 					"next_refresh": "datetime()",
 				})
 
-				res, err = tx.Exec(query, query_values...)
+				res, err = tx.Exec(query)
 				if err != nil {
-					log.Fatal(err)
+					logQueryError(query, err)
 				}
 
 				remote_id, err = res.LastInsertId()
 
-				query, query_values = makeInsertQuery("nodes_known",
+				query = makeInsertQuery("nodes_known",
 					map[string]interface{}{
 						"created_at": "datetime()",
 						"updated_at": "datetime()",
 					})
-				res, err = tx.Exec(query, query_values...)
+				res, err = tx.Exec(query)
 				if err != nil {
-					log.Fatal(err)
+					logQueryError(query, err)
 				}
 			}
 		}
@@ -340,45 +359,62 @@ func (node Node) Save() (err error) {
 
 // Make a parametrized SQL INSERT query and associated values for `table` using
 // the columns in `cols`
-func makeInsertQuery(table string, cols map[string]interface{}) (query string, query_values []interface{}) {
+func makeInsertQuery(table string, cols map[string]interface{}) (query string) {
 	query = fmt.Sprintf("INSERT INTO %s (%%s) VALUES (%%s)", table)
 
-	query_columns := make([]string, len(cols))
-	query_placeholders := make([]string, len(cols))
-	query_values = make([]interface{}, len(cols))
-	idx := 0
+	query_columns := make([]string, 0, len(cols))
+	query_values := make([]string, 0, len(cols))
 
 	for name, value := range cols {
-		query_columns[idx] = name
-		query_placeholders[idx] = "?"
-		query_values[idx] = value
+		query_columns = append(query_columns, name)
 
-		idx += 1
+		switch v := value.(type) {
+		case string:
+			query_values = append(query_values, v)
+		case uint16:
+			query_values = append(query_values, strconv.Itoa(int(v)))
+		case uint32:
+			query_values = append(query_values, strconv.Itoa(int(v)))
+		case int64:
+			query_values = append(query_values, strconv.Itoa(int(v)))
+		default:
+			panic(v)
+		}
 	}
 
-	query = fmt.Sprintf(query, strings.Join(query_columns, ","), strings.Join(query_placeholders, ","))
+	query = fmt.Sprintf(query, strings.Join(query_columns, ","), strings.Join(query_values, ","))
 
-	return query, query_values
+	return query
 }
 
-// Make a parametrised SQL UPDATE query and associated values for `table`
-// updating the columns in `cols` for row with `id`
-func makeUpdateQuery(table string, id int64, cols map[string]interface{}) (query string, query_values []interface{}) {
-	query = fmt.Sprintf("UPDATE %s SET %%s WHERE id=?", table)
+// Make an SQL UPDATE query for `table` updating the columns in `cols` for row with `id`
+func makeUpdateQuery(table string, id int64, cols map[string]interface{}) (query string) {
+	query = fmt.Sprintf("UPDATE %s SET %%s WHERE id=%d", table, id)
 
-	query_columns := make([]string, len(cols))
-	query_values = make([]interface{}, len(cols)+1)
-	idx := 0
+	query_columns := make([]string, 0, len(cols))
 
 	for name, value := range cols {
-		query_columns[idx] = name + "=?"
-		query_values[idx] = value
-
-		idx += 1
+		switch v := value.(type) {
+		case string:
+			query_columns = append(query_columns, name+"="+v)
+		case uint16:
+			query_columns = append(query_columns, name+"="+strconv.Itoa(int(v)))
+		case uint32:
+			query_columns = append(query_columns, name+"="+strconv.Itoa(int(v)))
+		case int64:
+			query_columns = append(query_columns, name+"="+strconv.Itoa(int(v)))
+		default:
+			panic(v)
+		}
 	}
-	query_values[idx] = id
 
 	query = fmt.Sprintf(query, strings.Join(query_columns, ","))
 
-	return query, query_values
+	return query
+}
+
+// Log a query error. Calls os.Exit(1)
+func logQueryError(query string, err error) {
+	log.Print(query)
+	log.Fatal(err)
 }
