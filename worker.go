@@ -153,6 +153,7 @@ func updateNodes(nodes <-chan Node, end chan<- bool) {
 // Connect to the node and retrieve updated information
 func refreshNode(node Node) (updated Node) {
 	updated.NetAddr = node.NetAddr
+	updated.Conn = node.Conn
 
 	err := sendVersion(node)
 	if err != nil {
