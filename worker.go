@@ -139,9 +139,9 @@ func updateNodes(nodes <-chan Node, end chan<- bool) {
 	for node := range nodes {
 		var upd Node
 		if node.Conn != nil {
-			if verbose {
-				log.Print("Refreshing ", node.NetAddr.IP.String, " ", node.NetAddr.Port)
-			}
+			// if verbose {
+			// 	log.Print("Refreshing ", node.NetAddr.IP.String(), " ", node.NetAddr.Port)
+			// }
 			upd = refreshNode(node)
 		} else {
 			upd = node
