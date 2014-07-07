@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 )
 
 type Message struct {
@@ -24,6 +25,10 @@ func receiveVersion(node Node) (version MsgVersion, err error) {
 	msg, err := receiveMessage(node)
 	if err != nil {
 		return
+	}
+
+	if msg.Type != "version" {
+		return MsgVersion{}, fmt.Errorf("Expected version got %s", msg.Type)
 	}
 
 	version, err = parseVersion(msg)
@@ -73,7 +78,7 @@ func receiveMessage(node Node) (msg Message, err error) {
 	payload := make([]byte, length)
 	_, err = io.ReadFull(node.Conn, payload)
 	if err != nil {
-		if verbose && err == "EOF" {
+		if verbose && err.Error() == "EOF" {
 			log.Printf("%v", payload)
 		}
 		return
