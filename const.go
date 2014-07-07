@@ -1,6 +1,8 @@
 package main
 
-import ("time")
+import (
+	"time"
+)
 
 // Magic numbers specific to each network
 var (
@@ -32,12 +34,12 @@ const NUM_CONNECTION_GOROUTINES = 20
 const NODE_CONNECT_TIMEOUT = 10
 
 // Size of channel of nodes which are live but haven't been refreshed yet
-const LIVE_NODE_BUFFER_SIZE = 20
+const NODE_BUFFER_SIZE = 20
 
 // Concurrent connections to DB
 const NUM_DB_CONN = 10
 
-const ADDRESSES_NUM = 5000   // Number of addresses to fetch
+const ADDRESSES_NUM = 5000                 // Number of addresses to fetch
 const ADDRESSES_INTERVAL = 5 * time.Minute // Interval to check for new addresses to update
 
 // Minimum update interval for nodes (hours)

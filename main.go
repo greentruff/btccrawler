@@ -11,7 +11,7 @@ var flagBootstrap string // Bootstrap from the given host
 
 var cpuprofile string  // Profile CPU
 var heapprofile string // Profile Memory
-var verbose bool // Verbose logging
+var verbose bool       // Verbose logging
 
 var fcpu, fheap *os.File
 
@@ -66,7 +66,7 @@ func main() {
 	go getNodes(addresses, end)
 	go connectNodes(addresses, nodes, end)
 	go updateNodes(nodes, end)
-	
+
 	// Wait for all three main goroutines to end
 	<-end
 	<-end

@@ -47,7 +47,6 @@ func getNodes(addresses chan<- ip_port, end chan<- bool) {
 	}
 
 	// Attempt to get new addresses endlessly.
-	
 
 	for {
 		log.Print(len(addresses), " addresses in queue")
@@ -62,9 +61,7 @@ func getNodes(addresses chan<- ip_port, end chan<- bool) {
 			for _, addr := range fetched_addresses {
 				addresses <- addr
 			}
-		} 
-
-		
+		}
 
 		time.Sleep(ADDRESSES_INTERVAL)
 	}
@@ -132,7 +129,7 @@ func updateNodes(nodes <-chan Node, end chan<- bool) {
 	defer func() {
 		end <- true
 	}()
-	
+
 	db := acquireDBConn()
 	defer releaseDBConn(db)
 
@@ -155,14 +152,22 @@ func refreshNode(node Node) (updated Node) {
 	updated.NetAddr = node.NetAddr
 	updated.Conn = node.Conn
 
+	ip := node.NetAddr.IP.String()
+	port := node.NetAddr.Port
+
 	err := sendVersion(node)
 	if err != nil {
+		if verbose {
+			log.Printf("Sending version (%s %d): %v", ip, port, err)
+		}
 		return
 	}
 
 	version, err := receiveVersion(node)
 	if err != nil {
-
+		if verbose {
+			log.Printf("Receiving version (%s %d): %v", ip, port, err)
+		}
 		return
 	}
 
@@ -170,11 +175,17 @@ func refreshNode(node Node) (updated Node) {
 
 	msg, err := receiveMessage(node)
 	if err != nil || msg.Type != "verack" {
+		if verbose {
+			log.Printf("Receiving verack (%s %d): %v", ip, port, err)
+		}
 		return // Expected verack to finish handshake
 	}
 
 	err = sendGetAddr(node)
 	if err != nil {
+		if verbose {
+			log.Printf("Sending getaddr (%s %d): %v", ip, port, err)
+		}
 		return
 	}
 	num_getaddr := 1
@@ -187,6 +198,10 @@ func refreshNode(node Node) (updated Node) {
 		if err != nil {
 			// TODO: Connection error ? Retry ?
 			// manage timeout for new getaddr
+			if verbose {
+				log.Printf("Receiving message (%s %d): %v", ip, port, err)
+			}
+
 			return
 		}
 

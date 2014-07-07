@@ -267,9 +267,9 @@ func (node Node) Save(db *sql.DB) (err error) {
 
 	if node.Addresses != nil {
 		for _, addr := range node.Addresses {
-			if verbose {
-				log.Print(ip, " ", port, " ", addr.IP.String(), " ", addr.Port)
-			}
+			// if verbose {
+			// 	log.Print(ip, " ", port, " ", addr.IP.String(), " ", addr.Port)
+			// }
 
 			query = fmt.Sprintf(`SELECT id, 
 					datetime(updated_at, '+%d HOURS') > datetime(), 
@@ -287,9 +287,9 @@ func (node Node) Save(db *sql.DB) (err error) {
 				rows.Scan(&remote_id, &recent_update, &remote_next_refresh)
 				rows.Close()
 
-				if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
-					log.Print(ip," ", port," id: ", remote_id)
-				}
+				// if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
+				// 	log.Print(ip," ", port," id: ", remote_id)
+				// }
 
 				// Check if already a known neighbour and insert/update accordingly
 				rows, err = tx.Query("SELECT id FROM nodes_known WHERE id_source=? AND id_known=?;",
@@ -348,9 +348,9 @@ func (node Node) Save(db *sql.DB) (err error) {
 
 				remote_id, err = res.LastInsertId()
 
-				if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
-					log.Print(ip," ", port," id: ", remote_id, " (new)")
-				}
+				// if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
+				// 	log.Print(ip," ", port," id: ", remote_id, " (new)")
+				// }
 
 				query = makeInsertQuery("nodes_known",
 					map[string]interface{}{
