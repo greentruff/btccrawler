@@ -3,11 +3,13 @@ package main
 import (
 	"flag"
 	"log"
+	"net"
 	"os"
 	"runtime/pprof"
 )
 
 var flagBootstrap string // Bootstrap from the given host
+var flagConnect string   // Connect only to the given address
 
 var cpuprofile string  // Profile CPU
 var heapprofile string // Profile Memory
@@ -17,6 +19,7 @@ var fcpu, fheap *os.File
 
 func init() {
 	flag.StringVar(&flagBootstrap, "bootstrap", "", "Node to bootstrap from if none are known")
+	flag.StringVar(&flagConnect, "connect", "", "Connect only to the given node")
 
 	flag.StringVar(&cpuprofile, "cpuprofile", "", "Write CPU profile to file")
 	flag.StringVar(&heapprofile, "heapprofile", "", "Write heap profile to file")
@@ -63,7 +66,25 @@ func main() {
 	nodes := make(chan Node, NODE_BUFFER_SIZE)
 	end := make(chan bool, 2)
 
-	go getNodes(addresses, end)
+	if flagConnect != "" {
+		end <- true // Lock for goroutine
+
+		ip, port, err := net.SplitHostPort(flagConnect)
+		if err != nil {
+			log.Fatal("Could not parse address to connect to: ", err)
+		}
+
+		if ip == "" {
+			log.Fatal("IP must be specified")
+		}
+
+		log.Print("Connecting to ", flagConnect)
+		addresses <- ip_port{ip, port}
+
+		close(addresses)
+	} else {
+		go getNodes(addresses, end)
+	}
 	go connectNodes(addresses, nodes, end)
 	go updateNodes(nodes, end)
 
