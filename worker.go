@@ -157,6 +157,11 @@ func refreshNode(node Node) (updated Node) {
 
 	err := sendVersion(node)
 	if err != nil {
+		if err.Error() == "connection refused" || err.Error() == "connection timed out" {
+			// Firewall blocking port
+			updated.Conn = nil
+			return
+		}
 		if verbose {
 			log.Printf("Sending version (%s %d): %v", ip, port, err)
 		}
