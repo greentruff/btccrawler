@@ -73,6 +73,9 @@ func receiveMessage(node Node) (msg Message, err error) {
 	payload := make([]byte, length)
 	_, err = io.ReadFull(node.Conn, payload)
 	if err != nil {
+		if verbose && err == "EOF" {
+			log.Printf("%v", payload)
+		}
 		return
 	}
 	msg.Payload = payload
