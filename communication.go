@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"time"
 )
 
 type Message struct {
@@ -47,8 +48,7 @@ func sendGetAddr(node Node) (err error) {
 	})
 }
 
-// Read on message from the given node. This call is blocking so
-// a timeout should be put on the net.Conn in node
+// Read on message from the given node. Times out after 30s
 func receiveMessage(node Node) (msg Message, err error) {
 	// Header has the following format
 	//   magic     0.. 3  [4]byte  magic number
@@ -57,6 +57,8 @@ func receiveMessage(node Node) (msg Message, err error) {
 	//   checksum 20..23  [4]byte  checksum of the payload
 	var header [24]byte
 
+	// Set 30s timeout for function
+	node.Conn.SetDeadline(time.Now().Add(30 * time.Second))
 	_, err = io.ReadFull(node.Conn, header[:])
 	if err != nil {
 		return
