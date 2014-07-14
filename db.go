@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"runtime/pprof"
 	"strconv"
 	"strings"
 
@@ -181,11 +180,6 @@ func (node Node) Save(db *sql.DB) (err error) {
 		if node.Version.UserAgent != "" || len(node.Addresses) > 0 {
 			log.Print(node.Version.UserAgent, " ", len(node.Addresses), " peers ", ip, " ", port)
 		}
-
-		// Update heap profile on each success
-		if heapprofile != "" {
-			defer pprof.WriteHeapProfile(fheap)
-		}
 	}
 
 	col["ip"] = "'" + ip + "'"
@@ -310,7 +304,7 @@ func (node Node) Save(db *sql.DB) (err error) {
 					query = makeInsertQuery("nodes_known",
 						map[string]interface{}{
 							"id_source": node_id,
-							"id_known": remote_id,
+							"id_known":  remote_id,
 
 							"created_at": "datetime()",
 							"updated_at": "datetime()",
@@ -358,7 +352,7 @@ func (node Node) Save(db *sql.DB) (err error) {
 				query = makeInsertQuery("nodes_known",
 					map[string]interface{}{
 						"id_source": node_id,
-						"id_known": remote_id,
+						"id_known":  remote_id,
 
 						"created_at": "datetime()",
 						"updated_at": "datetime()",
@@ -381,6 +375,8 @@ func (node Node) Save(db *sql.DB) (err error) {
 // Make a parametrized SQL INSERT query and associated values for `table` using
 // the columns in `cols`
 func makeInsertQuery(table string, cols map[string]interface{}) (query string) {
+	chstatcounter <- Stat{"insert", 1}
+
 	query = fmt.Sprintf("INSERT INTO %s (%%s) VALUES (%%s)", table)
 
 	query_columns := make([]string, 0, len(cols))
@@ -410,6 +406,8 @@ func makeInsertQuery(table string, cols map[string]interface{}) (query string) {
 
 // Make an SQL UPDATE query for `table` updating the columns in `cols` for row with `id`
 func makeUpdateQuery(table string, id int64, cols map[string]interface{}) (query string) {
+	chstatcounter <- Stat{"update", 1}
+
 	query = fmt.Sprintf("UPDATE %s SET %%s WHERE id=%d", table, id)
 
 	query_columns := make([]string, 0, len(cols))

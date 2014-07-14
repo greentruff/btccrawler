@@ -81,22 +81,24 @@ func parseVersion(msg Message) (ver MsgVersion, err error) {
 
 	var data = msg.Payload[(80 + n):] // Slice of data after varstr
 
-	var size_remaining = 4
-	if ver.Protocol >= VERSION_BIP_0037 {
-		size_remaining += 1
-	}
-
 	// Check if the remaining buffer is large enough
-	if len(data) < size_remaining {
-		err = fmt.Errorf("parseVersion: Payload too small (%d)", len(msg.Payload))
+	if len(data) < 4 {
+		err = fmt.Errorf("parseVersion: Payload too small (%d) for start_height", len(msg.Payload))
 		return
 	}
 
 	ver.StartHeight = int32(binary.LittleEndian.Uint32(data[:4]))
 
 	if ver.Protocol >= VERSION_BIP_0037 {
-		if data[4] != byte(0) {
-			ver.Relay = true
+		if len(data) == 5 {
+			if data[4] != byte(0) {
+				ver.Relay = true
+			}
+		} else {
+			if verbose {
+				log.Printf("Node should support relay but does not (ver %d / ua %s)",
+					ver.Protocol, ver.UserAgent)
+			}
 		}
 	}
 
@@ -172,8 +174,11 @@ func parseAddr(msg Message) (addresses []NetAddr, err error) {
 		return
 	}
 
-	addresses = make([]NetAddr, length)
-	for i := 0; i < int(length); i++ {
+	var num_addr = int(length)
+
+	addresses = make([]NetAddr, num_addr)
+
+	for i := 0; i < num_addr; i++ {
 		start := n + i*SIZE_NETADDR_WITH_TIME
 		end := n + (i+1)*SIZE_NETADDR_WITH_TIME
 		addresses[i], err = parseNetAddr(msg.Payload[start:end], true)

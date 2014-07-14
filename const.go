@@ -29,6 +29,7 @@ const USER_AGENT = "/BTCCRAWLER/0.1/"
 
 // Number of goroutines
 const NUM_CONNECTION_GOROUTINES = 20
+const NUM_UPDATE_GOROUTINES = 4
 
 // Timeout
 const NODE_CONNECT_TIMEOUT = 10

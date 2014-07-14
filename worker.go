@@ -4,6 +4,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -17,9 +18,9 @@ type Node struct {
 
 // Periodically get addresses of Nodes which need to be updated
 // Closes addresses on exit
-func getNodes(addresses chan<- ip_port, end chan<- bool) {
+func getNodes(addresses chan<- ip_port, wg *sync.WaitGroup) {
 	defer func() {
-		end <- true
+		wg.Done()
 	}()
 
 	// Add a bootstrap address if necessary
@@ -73,7 +74,7 @@ func getNodes(addresses chan<- ip_port, end chan<- bool) {
 // The number of addresses which are checked simultaneously is defined by
 // NUM_CONNECTION_GOROUTINES.
 // Closes nodes on exit
-func connectNodes(addresses <-chan ip_port, nodes chan<- Node, end chan<- bool) {
+func connectNodes(addresses <-chan ip_port, nodes chan<- Node, wg *sync.WaitGroup) {
 	// Declare here for defered check
 	rate_limiter := make(chan bool, NUM_CONNECTION_GOROUTINES)
 	defer func() {
@@ -83,7 +84,7 @@ func connectNodes(addresses <-chan ip_port, nodes chan<- Node, end chan<- bool) 
 		}
 
 		close(nodes)
-		end <- true
+		wg.Done()
 	}()
 
 	// Attempt to get a connection to each node
@@ -92,11 +93,11 @@ func connectNodes(addresses <-chan ip_port, nodes chan<- Node, end chan<- bool) 
 	}
 	for ipp := range addresses {
 		<-rate_limiter
-		go getSingleNode(ipp, nodes, rate_limiter)
+		go connectSingleNode(ipp, nodes, rate_limiter)
 	}
 }
 
-func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
+func connectSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
 	defer func() {
 		end <- true
 	}()
@@ -125,30 +126,51 @@ func getSingleNode(ipp ip_port, nodes chan<- Node, end chan<- bool) {
 	nodes <- node
 }
 
-func updateNodes(nodes <-chan Node, end chan<- bool) {
+func updateNodes(nodes <-chan Node, save chan<- Node, wg *sync.WaitGroup) {
+	defer func() {
+		close(save)
+		wg.Done()
+	}()
+
+	goroutine_end := make(chan bool, NUM_UPDATE_GOROUTINES)
+	for i := 0; i < NUM_UPDATE_GOROUTINES; i++ {
+		go updateNodeThread(nodes, save, goroutine_end)
+	}
+
+	for i := 0; i < NUM_UPDATE_GOROUTINES; i++ {
+		<-goroutine_end
+	}
+}
+
+func updateNodeThread(nodes <-chan Node, save chan<- Node, end chan<- bool) {
 	defer func() {
 		end <- true
 	}()
 
-	db := acquireDBConn()
-	defer releaseDBConn(db)
+	var upd Node
 
 	for node := range nodes {
-		var upd Node
 		if node.Conn != nil {
-			// if verbose {
-			// 	log.Print("Refreshing ", node.NetAddr.IP.String(), " ", node.NetAddr.Port)
-			// }
+			// Log memory usage
 			upd = refreshNode(node)
+			chstatcounter <- Stat{"refr", 1}
+			chstatcounter <- Stat{"addr", len(upd.Addresses)}
 		} else {
+			chstatcounter <- Stat{"skip", 1}
 			upd = node
 		}
-		upd.Save(db)
+		save <- upd
 	}
 }
 
 // Connect to the node and retrieve updated information
 func refreshNode(node Node) (updated Node) {
+	defer func() {
+		if node.Conn != nil {
+			node.Conn.Close()
+		}
+	}()
+
 	updated.NetAddr = node.NetAddr
 	updated.Conn = node.Conn
 
@@ -196,9 +218,8 @@ func refreshNode(node Node) (updated Node) {
 
 		if err != nil {
 			// TODO: Connection error ? Retry ?
-			// manage timeout for new getaddr
 			if verbose {
-				log.Printf("Receiving message (%s %d): %v", ip, port, err)
+				log.Printf("Error, receiving message (%s %d): %v", ip, port, err)
 			}
 
 			return
@@ -210,6 +231,7 @@ func refreshNode(node Node) (updated Node) {
 			if err != nil {
 				return
 			}
+
 			addresses = append(addresses, new_addresses...)
 
 			// Consider that all messages have been received for this getaddr
@@ -233,4 +255,18 @@ func refreshNode(node Node) (updated Node) {
 	updated.Addresses = addresses
 
 	return
+}
+
+func saveNodes(save <-chan Node, wg *sync.WaitGroup) {
+	defer func() {
+		wg.Done()
+	}()
+
+	db := acquireDBConn()
+	defer releaseDBConn(db)
+
+	for n := range save {
+		chstatcounter <- Stat{"save", 1}
+		n.Save(db)
+	}
 }
