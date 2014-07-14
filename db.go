@@ -309,6 +309,9 @@ func (node Node) Save(db *sql.DB) (err error) {
 				} else {
 					query = makeInsertQuery("nodes_known",
 						map[string]interface{}{
+							"id_source": node_id,
+							"id_known": remote_id,
+
 							"created_at": "datetime()",
 							"updated_at": "datetime()",
 						})
@@ -354,6 +357,9 @@ func (node Node) Save(db *sql.DB) (err error) {
 
 				query = makeInsertQuery("nodes_known",
 					map[string]interface{}{
+						"id_source": node_id,
+						"id_known": remote_id,
+
 						"created_at": "datetime()",
 						"updated_at": "datetime()",
 					})
