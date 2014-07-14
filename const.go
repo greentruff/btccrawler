@@ -11,7 +11,7 @@ var (
 	NETWORK_TESTNET3 []byte = []byte{0x0B, 0x11, 0x09, 0x07}
 	NETWORK_NAMECOIN []byte = []byte{0xF9, 0xBE, 0xB4, 0xFE}
 
-	NETWORK_CURRENT = NETWORK_TESTNET3 // The network in use
+	NETWORK_CURRENT = NETWORK_MAIN // The network in use
 )
 
 // Maximum size payload that a message can have
