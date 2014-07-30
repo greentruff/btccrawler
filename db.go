@@ -4,10 +4,20 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
 	"strconv"
-	"strings"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+)
+
+// Default max number of arguments for an SQLite query
+const SQLITE_MAX_VARIABLE_NUMBER = 999
+
+// Special values for ids
+const (
+	ID_UNKNOWN   = 0  // The state of the node in the DB is unknown
+	ID_NOT_IN_DB = -1 // The node was not found in the DB
 )
 
 type ip_port struct {
@@ -15,24 +25,63 @@ type ip_port struct {
 	port string
 }
 
+type nodeDB struct {
+	node *Node
+
+	tx           *sql.Tx
+	now          int64 // Current time for updated_at, next_refresh..
+	dbInfo       dbNodeInfo
+	dbNeighbours map[string]dbNeighbourInfo // Key is joined IP/Port
+}
+
+// Node attributes which are stored in the DB
+type dbNodeInfo struct {
+	id int64
+
+	ip   string
+	port string
+
+	protocol   int
+	user_agent string
+
+	next_refresh int64
+
+	online     bool
+	online_at  int64
+	success    bool
+	success_at int64
+}
+
+// Node neighbour partial attributes stored in the DB
+type dbNeighbourInfo struct {
+	id           int64
+	next_refresh int64
+}
+
+// In schemas, type DATE is used instead of DATETIME so that the sqlite driver
+// does not try to convert the underlying int to a time.Time. SQLite considers
+// both types as NUMERIC (see http://www.sqlite.org/datatype3.html)
 const INIT_SCHEMA_NODES = `
 	CREATE TABLE IF NOT EXISTS "nodes" (
-		"id" INTEGER PRIMARY KEY,
-		"ip" TEXT,
-		"port" INTEGER,
-		"protocol" INTEGER,
-		"user_agent" TEXT,
+		"id"           INTEGER PRIMARY KEY AUTOINCREMENT,
 
-		"online" BOOL, 
-		"success" BOOL,
+		"ip"           TEXT,
+		"port"         INTEGER,
+		"protocol"     INTEGER,
+		"user_agent"   TEXT,
 
-		"next_refresh" DATETIME,
+		"online"       BOOLEAN, 
+		"success"      BOOLEAN,
 
-		"online_at" DATETIME,
-		"success_at" DATETIME,
+		"next_refresh" DATE,
 
-		"created_at" DATETIME,
-		"updated_at" DATETIME
+		"online_at"    DATE, -- Move to seperate table ?
+		"success_at"   DATE,
+
+		"created_at"   DATE DEFAULT (strftime('%s', 'now')),
+		"updated_at"   DATE,
+
+		UNIQUE (ip, port)
 	);
 	`
 
@@ -43,10 +92,13 @@ const INIT_SCHEMA_NODES_KNOWN = `
 		"id_source" INTEGER,
 		"id_known" INTEGER,
 
-		"created_at" DATETIME,
-		"updated_at" DATETIME
+		"created_at" DATE DEFAULT (strftime('%s', 'now')),
+		"updated_at" DATE,
+
+		UNIQUE (id_source, id_known)
 	);
 	`
+
 const INDEX_IP_PORT = "CREATE INDEX IF NOT EXISTS node_ip_port ON nodes (ip, port);"
 const INDEX_SOURCE_KNOWN = "CREATE INDEX IF NOT EXISTS nodes_known_source_known ON nodes_known (id_source, id_known);"
 
@@ -62,25 +114,35 @@ func initDB() (err error) {
 		if err != nil {
 			return err
 		}
+
+		if _, err = db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+			log.Fatal("Failed to Exec PRAGMA journal_mode:", err)
+		}
+
 		dbConnectionPool <- db
 	}
 
 	db := acquireDBConn()
 	defer releaseDBConn(db)
 
+	setupDB(db)
+
+	return
+}
+
+// Set up the database schema
+func setupDB(db *sql.DB) {
 	for _, q := range []string{
 		INIT_SCHEMA_NODES,
 		INIT_SCHEMA_NODES_KNOWN,
 		INDEX_IP_PORT,
 		INDEX_SOURCE_KNOWN,
 	} {
-		_, err = db.Exec(q)
+		_, err := db.Exec(q)
 		if err != nil {
 			logQueryError(q, err)
 		}
 	}
-
-	return
 }
 
 // Clean up pool of DB connections
@@ -165,271 +227,379 @@ func addressesToUpdate() (addresses []ip_port, max int) {
 	return addresses, max
 }
 
-// Save a node to persistence. If the node does not already exist in the DB,
-// create it. The relation to other nodes is also saved.
-func (node Node) Save(db *sql.DB) (err error) {
-	var query string
+// Save the node to the database
+func (node *Node) Save(db *sql.DB) (err error) {
+	dbnode := nodeDB{node: node}
+	return dbnode.Save(db)
+}
 
-	ip := node.NetAddr.IP.String()
-	port := node.NetAddr.Port
+// Save or the node to the database. The relation to other nodes is also saved.
+func (n *nodeDB) Save(db *sql.DB) (err error) {
+	n.dbInfo = dbNodeInfo{
+		ip:   n.node.NetAddr.IP.String(),
+		port: strconv.Itoa(int(n.node.NetAddr.Port)),
+	}
 
-	// Columns to set/update
-	col := make(map[string]interface{})
-
-	if node.Version != nil {
-		if node.Version.UserAgent != "" || len(node.Addresses) > 0 {
-			log.Print(node.Version.UserAgent, " ", len(node.Addresses), " peers ", ip, " ", port)
+	if n.node.Version != nil {
+		if n.node.Version.UserAgent != "" || len(n.node.Addresses) > 0 {
+			log.Print(n.node.Version.UserAgent, " ", len(n.node.Addresses),
+				" peers ", n.dbInfo.ip, " ", n.dbInfo.port)
 		}
 	}
 
-	col["ip"] = "'" + ip + "'"
-	col["port"] = port
-
-	// Able to TCP connect to node
-	if node.Conn == nil {
-		col["online"] = "0"
-		// Do not refresh until the node is seen again as a neighbour
-		col["next_refresh"] = "NULL"
-	} else {
-		col["online"] = "1"
-		col["online_at"] = "datetime()"
-
-		col["next_refresh"] = fmt.Sprintf("datetime('now', '+%d HOURS')",
-			NODE_REFRESH_INTERVAL)
-	}
-
-	// Able initiate communication with node
-	if node.Version != nil {
-		col["protocol"] = node.Version.Protocol
-		col["user_agent"] = "'" + node.Version.UserAgent + "'"
-
-		col["success"] = "1"
-		col["success_at"] = "datetime()"
-	} else {
-		col["success"] = "0"
-	}
-
-	// Begin saving to DB
-	tx, err := db.Begin()
+	n.tx, err = db.Begin()
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer tx.Rollback()
+	defer n.tx.Rollback()
 
-	// Find if node has already been contacted
-	rows, err := tx.Query("SELECT id FROM nodes WHERE ip=? AND port=?", ip, port)
-	if err != nil {
-		logQueryError(query, err)
-	}
+	// Get existing information from current node if any
+	n.dbGetNode()
+	// Update last updated time
+	n.now = time.Now().Unix()
 
-	var (
-		node_id int64
-		res     sql.Result
-	)
-	if rows.Next() {
-		rows.Scan(&node_id)
-		rows.Close()
-
-		//Node exists, update
-		col["updated_at"] = "datetime()"
-
-		query = makeUpdateQuery("nodes", node_id, col)
-		res, err = tx.Exec(query)
-
-		if err != nil {
-			logQueryError(query, err)
-		}
+	//Was able to connect to node
+	if n.node.Conn == nil {
+		n.dbInfo.online = false
+		n.dbInfo.next_refresh = 0 // stop updating node
 	} else {
-		col["created_at"] = "datetime()"
-		col["updated_at"] = "datetime()"
-		query = makeInsertQuery("nodes", col)
-		res, err = tx.Exec(query)
+		n.dbInfo.online = true
+		n.dbInfo.online_at = n.now
 
-		if err != nil {
-			logQueryError(query, err)
-		}
-
-		node_id, err = res.LastInsertId()
+		n.dbInfo.next_refresh = n.now + (NODE_REFRESH_INTERVAL * 3600)
 	}
 
-	// Save known nodes
-	var (
-		remote_id, known_node_id int64
-		recent_update            int
-		remote_next_refresh      string
-	)
+	// Was able initiate communication with node
+	if n.node.Version != nil {
+		n.dbInfo.protocol = int(n.node.Version.Protocol)
+		n.dbInfo.user_agent = n.node.Version.UserAgent
 
-	if node.Addresses != nil {
-		for _, addr := range node.Addresses {
-			// if verbose {
-			// 	log.Print(ip, " ", port, " ", addr.IP.String(), " ", addr.Port)
-			// }
-
-			query = fmt.Sprintf(`SELECT id, 
-					datetime(updated_at, '+%d HOURS') > datetime(), 
-					next_refresh
-				FROM nodes 
-				WHERE ip=? AND port=?`, NODE_REFRESH_INTERVAL)
-			rows, err = tx.Query(query,
-				addr.IP.String(), addr.Port)
-			if err != nil {
-				logQueryError(query, err)
-			}
-
-			if rows.Next() {
-				// Remote node already known
-				rows.Scan(&remote_id, &recent_update, &remote_next_refresh)
-				rows.Close()
-
-				// if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
-				// 	log.Print(ip," ", port," id: ", remote_id)
-				// }
-
-				// Check if already a known neighbour and insert/update accordingly
-				rows, err = tx.Query("SELECT id FROM nodes_known WHERE id_source=? AND id_known=?;",
-					node_id, remote_id)
-				if err != nil {
-					logQueryError(query, err)
-				}
-
-				if rows.Next() {
-					rows.Scan(&known_node_id)
-					rows.Close()
-
-					query = makeUpdateQuery("nodes_known", known_node_id,
-						map[string]interface{}{
-							"updated_at": "datetime()",
-						})
-				} else {
-					query = makeInsertQuery("nodes_known",
-						map[string]interface{}{
-							"id_source": node_id,
-							"id_known":  remote_id,
-
-							"created_at": "datetime()",
-							"updated_at": "datetime()",
-						})
-				}
-
-				res, err = tx.Exec(query)
-				if err != nil {
-					logQueryError(query, err)
-				}
-
-				// Set the next refresh date if necessary
-				if remote_next_refresh == "" && recent_update == 0 {
-					query = makeUpdateQuery("nodes", remote_id, map[string]interface{}{
-						"next_refresh": fmt.Sprintf("datetime('now', '+%d HOURS')", NODE_REFRESH_INTERVAL),
-					})
-
-					res, err = tx.Exec(query)
-					if err != nil {
-						logQueryError(query, err)
-					}
-				}
-			} else {
-				// New peer node
-				query = makeInsertQuery("nodes", map[string]interface{}{
-					"ip":   "'" + addr.IP.String() + "'",
-					"port": addr.Port,
-
-					"created_at":   "datetime()",
-					"updated_at":   "datetime()",
-					"next_refresh": "datetime()",
-				})
-
-				res, err = tx.Exec(query)
-				if err != nil {
-					logQueryError(query, err)
-				}
-
-				remote_id, err = res.LastInsertId()
-
-				// if verbose && (node.Version.UserAgent != "" || len(node.Addresses) > 0) {
-				// 	log.Print(ip," ", port," id: ", remote_id, " (new)")
-				// }
-
-				query = makeInsertQuery("nodes_known",
-					map[string]interface{}{
-						"id_source": node_id,
-						"id_known":  remote_id,
-
-						"created_at": "datetime()",
-						"updated_at": "datetime()",
-					})
-				res, err = tx.Exec(query)
-				if err != nil {
-					logQueryError(query, err)
-				}
-			}
-		}
+		n.dbInfo.success = true
+		n.dbInfo.success_at = n.now
+	} else {
+		n.dbInfo.success = false
 	}
 
-	err = tx.Commit()
+	n.dbPutNode()
+
+	// Update neighbour nodes
+
+	// Initialize struct and get existing information on neighnours, if any
+	n.dbGetNeighbours()
+
+	// Update next_refresh if necessary
+	for _, addr := range n.node.Addresses {
+		canon_addr := net.JoinHostPort(addr.IP.String(), strconv.Itoa(int(addr.Port)))
+
+		neigh := n.dbNeighbours[canon_addr]
+		if neigh.next_refresh < n.now {
+			neigh.next_refresh = n.dbInfo.next_refresh
+			n.dbNeighbours[canon_addr] = neigh
+		}
+	}
+	n.dbPutNeighbours()
+
+	err = n.tx.Commit()
 	if err != nil {
 		log.Fatal(err)
 	}
 	return
 }
 
-// Make a parametrized SQL INSERT query and associated values for `table` using
-// the columns in `cols`
-func makeInsertQuery(table string, cols map[string]interface{}) (query string) {
-	chstatcounter <- Stat{"insert", 1}
-
-	query = fmt.Sprintf("INSERT INTO %s (%%s) VALUES (%%s)", table)
-
-	query_columns := make([]string, 0, len(cols))
-	query_values := make([]string, 0, len(cols))
-
-	for name, value := range cols {
-		query_columns = append(query_columns, name)
-
-		switch v := value.(type) {
-		case string:
-			query_values = append(query_values, v)
-		case uint16:
-			query_values = append(query_values, strconv.Itoa(int(v)))
-		case uint32:
-			query_values = append(query_values, strconv.Itoa(int(v)))
-		case int64:
-			query_values = append(query_values, strconv.Itoa(int(v)))
-		default:
-			panic(v)
-		}
+// Retrive database information about a single node
+func (n *nodeDB) dbGetNode() {
+	if n.tx == nil {
+		log.Fatal("Transaction not initialized")
 	}
 
-	query = fmt.Sprintf(query, strings.Join(query_columns, ","), strings.Join(query_values, ","))
+	// Get dates with strftime to get timestamps
+	query := `SELECT id, protocol, user_agent, online, online_at, 
+				success, success_at, next_refresh
+			FROM nodes 
+			WHERE ip=?
+  			  AND port=?`
+	row := n.tx.QueryRow(query, n.dbInfo.ip, n.dbInfo.port)
 
-	return query
+	err := row.Scan(&(n.dbInfo.id), &(n.dbInfo.protocol), &(n.dbInfo.user_agent),
+		&(n.dbInfo.online), &(n.dbInfo.online_at),
+		&(n.dbInfo.success), &(n.dbInfo.success_at),
+		&(n.dbInfo.next_refresh))
+
+	// Ignore if err if node does not exist
+	switch {
+	case err == sql.ErrNoRows:
+		n.dbInfo.id = -1
+	case err != nil:
+		logQueryError(query, err)
+	}
 }
 
-// Make an SQL UPDATE query for `table` updating the columns in `cols` for row with `id`
-func makeUpdateQuery(table string, id int64, cols map[string]interface{}) (query string) {
-	chstatcounter <- Stat{"update", 1}
+// Retrieve only the id for the given node
+func (n *nodeDB) dbGetNodeId() {
+	if n.tx == nil {
+		log.Fatal("Transaction not initialized")
+	}
 
-	query = fmt.Sprintf("UPDATE %s SET %%s WHERE id=%d", table, id)
+	// Get dates with strftime to get timestamps
+	query := `SELECT id
+			FROM nodes 
+			WHERE ip=?
+  			  AND port=?`
+	row := n.tx.QueryRow(query, n.dbInfo.ip, n.dbInfo.port)
 
-	query_columns := make([]string, 0, len(cols))
+	err := row.Scan(&(n.dbInfo.id))
 
-	for name, value := range cols {
-		switch v := value.(type) {
-		case string:
-			query_columns = append(query_columns, name+"="+v)
-		case uint16:
-			query_columns = append(query_columns, name+"="+strconv.Itoa(int(v)))
-		case uint32:
-			query_columns = append(query_columns, name+"="+strconv.Itoa(int(v)))
-		case int64:
-			query_columns = append(query_columns, name+"="+strconv.Itoa(int(v)))
+	// Ignore if err if node does not exist
+	switch {
+	case err == sql.ErrNoRows:
+		n.dbInfo.id = -1
+	case err != nil:
+		logQueryError(query, err)
+	}
+}
+
+// Save a node to the DB and store its id
+func (n *nodeDB) dbPutNode() {
+	if n.tx == nil {
+		log.Fatal("Transaction not initialized")
+	}
+
+	// Retrieve info from DB if state unknown
+	if n.dbInfo.id == ID_UNKNOWN {
+		n.dbGetNodeId()
+	}
+
+	var (
+		err   error
+		query string
+	)
+	params := [11]interface{}{n.dbInfo.ip, n.dbInfo.port, n.dbInfo.next_refresh,
+		n.dbInfo.protocol, n.dbInfo.user_agent,
+		n.dbInfo.online, n.dbInfo.online_at,
+		n.dbInfo.success, n.dbInfo.success_at,
+		n.now, 0}
+
+	if n.dbInfo.id == ID_NOT_IN_DB {
+		query = `INSERT INTO nodes (ip, port, next_refresh, protocol, user_agent, 
+					online, online_at, success, success_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		_, err = n.tx.Exec(query, params[:10]...)
+	} else {
+		query = `UPDATE nodes SET ip=?, port=?, next_refresh=?, protocol=?, 
+					user_agent=?, online=?, online_at=?, success=?, success_at=?, 
+					updated_at=?
+					WHERE id=?`
+		params[10] = n.dbInfo.id
+		_, err = n.tx.Exec(query, params[:11]...)
+	}
+
+	if err != nil {
+		logQueryError(query, err)
+	}
+
+	// Retrieve the inserted row's id if previously unknown
+	if n.dbInfo.id == ID_UNKNOWN || n.dbInfo.id == ID_NOT_IN_DB {
+		n.dbGetNode()
+	}
+}
+
+// Gets id and next_refresh for neighbour nodes. Stores in n.dbNeighbours
+// Uses prepared statements insted of creating one big query
+func (n *nodeDB) dbGetNeighbours() {
+
+	if n.node.Addresses == nil {
+		return
+	}
+
+	var init = (n.dbNeighbours == nil)
+
+	// Initialize neighbours map if this is the first call to dbGetNeighbours
+	if init {
+		n.dbNeighbours = make(map[string]dbNeighbourInfo)
+	}
+
+	// Prepare query
+	query := "SELECT id, next_refresh FROM nodes WHERE ip=? AND port=?"
+	stmt, err := n.tx.Prepare(query)
+	if err != nil {
+		logQueryError(query, err)
+	}
+	defer stmt.Close()
+
+	var (
+		row        *sql.Row
+		neigh      dbNeighbourInfo
+		canon_addr string
+
+		id           int64
+		ip           string
+		port         string
+		next_refresh int64
+	)
+
+	// Retrieve neighbour information
+	for i := 0; i < len(n.node.Addresses); i++ {
+		ip = n.node.Addresses[i].IP.String()
+		port = strconv.Itoa(int(n.node.Addresses[i].Port))
+		canon_addr = net.JoinHostPort(ip, port)
+
+		row = stmt.QueryRow(ip, port)
+		err = row.Scan(&id, &next_refresh)
+
+		switch {
+		case err == sql.ErrNoRows:
+			neigh = dbNeighbourInfo{
+				id: ID_NOT_IN_DB,
+			}
+		case err != nil:
+			// Unexpected DB error
+			log.Fatal(err)
 		default:
-			panic(v)
+			if !init {
+				// Update existing
+				neigh = n.dbNeighbours[canon_addr]
+				neigh.id = id
+				neigh.next_refresh = next_refresh
+			} else {
+				// Create new
+				neigh = dbNeighbourInfo{
+					id:           id,
+					next_refresh: next_refresh,
+				}
+			}
+		}
+
+		n.dbNeighbours[canon_addr] = neigh
+	}
+}
+
+// Update neighbour nodes and relations in DB
+func (n *nodeDB) dbPutNeighbours() {
+	if len(n.dbNeighbours) == 0 {
+		return
+	}
+
+	if n.dbInfo.id == ID_UNKNOWN || n.dbInfo.id == ID_NOT_IN_DB {
+		n.dbGetNodeId()
+		if n.dbInfo.id == ID_UNKNOWN || n.dbInfo.id == ID_NOT_IN_DB {
+			log.Fatal("Attempted to insert neighbours for a node which is not in DB")
 		}
 	}
 
-	query = fmt.Sprintf(query, strings.Join(query_columns, ","))
+	// Prepare node queries
+	select_node_query := "SELECT id FROM nodes WHERE ip=? AND port=?"
+	select_node_stmt, err := n.tx.Prepare(select_node_query)
+	if err != nil {
+		logQueryError(select_node_query, err)
+	}
+	defer select_node_stmt.Close()
 
-	return query
+	insert_node_query := "INSERT INTO nodes (ip, port, next_refresh, updated_at) VALUES (?, ?, ?, ?)"
+	insert_node_stmt, err := n.tx.Prepare(insert_node_query)
+	if err != nil {
+		logQueryError(insert_node_query, err)
+	}
+	defer insert_node_stmt.Close()
+
+	update_node_query := "UPDATE nodes SET next_refresh=?, updated_at=? WHERE id=?"
+	update_node_stmt, err := n.tx.Prepare(update_node_query)
+	if err != nil {
+		logQueryError(update_node_query, err)
+	}
+	defer update_node_stmt.Close()
+
+	// Prepare known nodes queries
+	select_known_query := "SELECT id FROM nodes_known WHERE id_source=? AND id_known=?"
+	select_known_stmt, err := n.tx.Prepare(select_known_query)
+	if err != nil {
+		logQueryError(select_known_query, err)
+	}
+	defer select_known_stmt.Close()
+
+	insert_known_query := "INSERT INTO nodes_known (id_source, id_known, updated_at) VALUES (?, ?, ?)"
+	insert_known_stmt, err := n.tx.Prepare(insert_known_query)
+	if err != nil {
+		logQueryError(insert_known_query, err)
+	}
+	defer insert_known_stmt.Close()
+
+	update_known_query := "UPDATE nodes_known SET updated_at=? WHERE id=?"
+	update_known_stmt, err := n.tx.Prepare(update_known_query)
+	if err != nil {
+		logQueryError(update_known_query, err)
+	}
+	defer update_known_stmt.Close()
+
+	// Insert nodes
+	var (
+		row *sql.Row
+
+		id_rel int64
+		ip     string
+		port   string
+	)
+	for hostport, info := range n.dbNeighbours {
+		ip, port, err = net.SplitHostPort(hostport)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// Check if node is in DB if currently unknown
+		if info.id == ID_UNKNOWN {
+			row = select_node_stmt.QueryRow(ip, port)
+
+			err = row.Scan(&(info.id))
+
+			switch {
+			case err == sql.ErrNoRows:
+				info.id = ID_NOT_IN_DB
+			case err != nil:
+				// Unexpected DB error
+				log.Fatal(err)
+			}
+		}
+
+		// Insert/update node in DB
+		if info.id == ID_NOT_IN_DB {
+			// insert
+			_, err = insert_node_stmt.Exec(ip, port, info.next_refresh, n.now)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// retrieve new id
+			row = select_node_stmt.QueryRow(ip, port)
+			err = row.Scan(&(info.id))
+			if err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			//update
+			_, err = update_node_stmt.Exec(info.next_refresh, n.now, info.id)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		// insert/update known nodes relation
+		row = select_known_stmt.QueryRow(n.dbInfo.id, info.id)
+		err = row.Scan(&id_rel)
+
+		switch {
+		case err == sql.ErrNoRows:
+			_, err = insert_known_stmt.Exec(n.dbInfo.id, info.id, n.now)
+			if err != nil {
+				log.Fatal(err)
+			}
+		case err != nil:
+			log.Fatal(err)
+		default:
+			_, err = update_known_stmt.Exec(n.now, id_rel)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
 }
 
 // Log a query error. Calls os.Exit(1)
