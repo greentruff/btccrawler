@@ -65,21 +65,21 @@ const INIT_SCHEMA_NODES = `
 	CREATE TABLE IF NOT EXISTS "nodes" (
 		"id"           INTEGER PRIMARY KEY AUTOINCREMENT,
 
-		"ip"           TEXT,
-		"port"         INTEGER,
-		"protocol"     INTEGER,
-		"user_agent"   TEXT,
+		"ip"           TEXT NOT NULL,
+		"port"         INTEGER NOT NULL,
+		"protocol"     INTEGER NOT NULL DEFAULT 0,
+		"user_agent"   TEXT DEFAULT '',
 
-		"online"       BOOLEAN, 
-		"success"      BOOLEAN,
+		"online"       BOOLEAN NOT NULL DEFAULT 0, 
+		"success"      BOOLEAN NOT NULL DEFAULT 0,
 
-		"next_refresh" DATE,
+		"next_refresh" DATE NOT NULL DEFAULT 0,
 
-		"online_at"    DATE, -- Move to seperate table ?
-		"success_at"   DATE,
+		"online_at"    DATE NOT NULL DEFAULT 0, -- Move to seperate table ?
+		"success_at"   DATE NOT NULL DEFAULT 0,
 
-		"created_at"   DATE DEFAULT (strftime('%s', 'now')),
-		"updated_at"   DATE,
+		"created_at"   DATE NOT NULL DEFAULT (strftime('%s', 'now')),
+		"updated_at"   DATE NOT NULL,
 
 		UNIQUE (ip, port)
 	);
