@@ -66,19 +66,19 @@ func stats(frequency int, memory bool) {
 
 			runtime.ReadMemStats(&m)
 
-			fmt.Fprintf(w, t.Format("2006/01/02 15:04:05"))
+			fmt.Fprintf(w, t.Format("2006/01/02 15:04:05 "))
 
 			// Counters
 			for _, c := range counters {
 				val := counter_values[c]
 				val_last := last_values[c]
 
-				fmt.Fprintf(w, " %s: %d (%d", c, val, val-val_last)
+				fmt.Fprintf(w, "%s: %d (%d", c, val, val-val_last)
 
 				if diff != 0 {
 					fmt.Fprintf(w, " %d/s", (val-val_last)/diff)
 				}
-				w.WriteRune(')')
+				w.WriteString(")\t")
 
 				last_values[c] = val
 			}
