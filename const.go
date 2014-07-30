@@ -25,7 +25,7 @@ const SIZE_NETADDR_WITH_TIME = 30
 
 // Length must be less then 0xfd
 const CURRENT_PROTOCOL = 70001
-const USER_AGENT = "/BTCCRAWLER/0.1/"
+const USER_AGENT = "/BTCCRAWLER/0.4/"
 
 // Number of goroutines
 const NUM_CONNECTION_GOROUTINES = 20
