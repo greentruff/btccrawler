@@ -44,4 +44,4 @@ const ADDRESSES_NUM = 5000                 // Number of addresses to fetch
 const ADDRESSES_INTERVAL = 5 * time.Minute // Interval to check for new addresses to update
 
 // Minimum update interval for nodes (hours)
-const NODE_REFRESH_INTERVAL = 6
+const NODE_REFRESH_INTERVAL = 24
