@@ -192,6 +192,7 @@ func addressesToUpdate() (addresses []ip_port, max int) {
 	query := fmt.Sprintf(`SELECT ip, port 
 		FROM nodes 
 		WHERE port!=0
+			AND next_refresh != 0
 			AND next_refresh < strftime('%%s', 'now')
 		ORDER BY next_refresh
 		LIMIT %d`, ADDRESSES_NUM)
@@ -216,6 +217,7 @@ func addressesToUpdate() (addresses []ip_port, max int) {
 	query = `SELECT COUNT(*) 
 		FROM nodes 
 		WHERE port!=0
+			AND next_refresh != 0
 			AND next_refresh < strftime('%s', 'now')`
 
 	row := db.QueryRow(query)
